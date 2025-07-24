@@ -12,7 +12,7 @@ load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d %(message)s",
+    format="%(asctime)s [%(levelname)s] %(filename)s:%(lineno)d %(message)s\n",
     handlers=[logging.FileHandler("data/llm_usage.log"), logging.StreamHandler()]
 )
 
