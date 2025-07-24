@@ -11,6 +11,7 @@ st.set_page_config(layout="wide")
 st.title("Citation Graph Explorer")
 
 if "data_loaded" not in st.session_state:
+    logger.info("DONT HAVE muultiple streamlit windows loaded in browser!!!\n\n")
     load_data_if_missing()
     st.session_state.data_loaded = True
 
@@ -37,7 +38,7 @@ if st.session_state.graph_name:
 
     if st.button("Top 20 Papers from last 3 Years"):
         
-        df = pd.DataFrame(check_top_papers_from_last_3_years(topic, no_of_papers=20))
+        df = pd.DataFrame(check_top_papers_from_last_3_years(topic_name, no_of_papers=20))
         df_modified = df.drop(columns=["ID", "Abstract"])
 
         st.table(df_modified)

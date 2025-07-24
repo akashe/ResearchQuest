@@ -43,8 +43,6 @@ print(f"Number of citation count mismatches: {citationCountMismatch}")
 total_unique_papers = len(cited_paper_ids)
 print(f"Total unique papers with citations: {total_unique_papers}")
 
-exit(-1)
-
 # Create DataFrame from updated dictionary
 df = pd.DataFrame(
     [(pid, vals[0], vals[1]) for pid, vals in cited_paper_ids.items()],
@@ -58,17 +56,17 @@ current_year = datetime.datetime.now().year
 def keep_paper(row):
     age = current_year - row['year']
     if age == 0:
-        return row['citationCount'] >= 3
+        return row['citationCount'] >= 0
     elif age == 1:
-        return row['citationCount'] > 25
+        return row['citationCount'] > 5
     elif age == 2:
-        return row['citationCount'] > 100
+        return row['citationCount'] > 25
     elif age == 3:
-        return row['citationCount'] > 500
+        return row['citationCount'] > 100
     elif age == 4:
-        return row['citationCount'] > 1000
+        return row['citationCount'] > 250
     else:
-        return row['citationCount'] > 1000 
+        return row['citationCount'] > 500 
 
 df = df[df.apply(keep_paper, axis=1)]
 
@@ -95,10 +93,10 @@ year_stats = df['year'].value_counts().sort_index()
 for year, count in year_stats.items():
     print(f"{year}: {count}")
 
-prune_year = 2010
+prune_year = 2018
 print(f'Removing papers before the year {prune_year}')
 
-df = df[df['year'] >= 2010]
+df = df[df['year'] >= prune_year]
 print(f'After pruning, total papers: {len(df)}')
 
 

@@ -2,6 +2,8 @@ import streamlit as st
 from neo4j import GraphDatabase
 from custom_logging import logger
 from pprint import pformat
+import csv
+from tqdm import tqdm
 
 # Load Neo4j credentials from Streamlit secrets
 uri = st.secrets["neo4j"]["uri"]
@@ -17,6 +19,11 @@ def run_query(query, params=None):
         result = session.run(query, params or {})
         return [record.data() for record in result]
     
+# Helper to execute a query in batch
+def run_batch_query(query, rows):
+    with driver.session() as session:
+        session.write_transaction(lambda tx: tx.run(query, rows=rows))
+    
 
 def check_data_presence():
     node_count = run_query("MATCH (n:Paper) RETURN count(n) AS node_count")[0]["node_count"]
@@ -26,27 +33,90 @@ def check_data_presence():
     return node_count > 0 and edge_count > 0
 
 
+# Load CSV in chunks and send to Neo4j
+def load_nodes_in_batches(csv_file_path, batch_size=500):
+    query = """
+    UNWIND $rows AS row
+    CREATE (:Paper {
+        id: row.id,
+        label: row.label,
+        year: toInteger(row.year),
+        citationCount: toInteger(row.citationCount),
+        url: row.url,
+        pageRank: toFloat(row.pageRank),
+        abstract: row.abstract
+    })
+    """
+    with open(csv_file_path, newline='', encoding='utf-8') as f:
+        reader = list(csv.DictReader(f))
+        for i in tqdm(range(0, len(reader), batch_size), desc="Loading nodes"):
+            batch = reader[i:i+batch_size]
+            run_batch_query(query, batch)
+
+def create_index_on_paper_id():
+    query = """
+    CREATE INDEX paper_id_index IF NOT EXISTS FOR (p:Paper) ON (p.id);
+    """
+    with driver.session() as session:
+        session.run(query)
+    print("✅ Index on Paper.id created (or already exists).")
+
+
+def remove_duplicate_nodes():
+    query = """
+    MATCH (p:Paper)
+    WITH p.id AS pid, p
+    ORDER BY id(p)
+    WITH pid, collect(p) AS nodes
+    WHERE size(nodes) > 1
+    UNWIND nodes[1..] AS toDelete
+    CALL {
+    WITH toDelete
+    DETACH DELETE toDelete
+    } IN TRANSACTIONS OF 100 ROWS
+    """
+    with driver.session() as session:
+        session.run(query)
+    print("✅ Removed duplicate nodes with same id")
+
+
+def load_edges_in_batches(csv_file_path, batch_size=500):
+    query = """
+    UNWIND $rows AS row
+    MATCH (source:Paper {id: row.source_id})
+    MATCH (target:Paper {id: row.target_id})
+    CREATE (source)-[:CITES]->(target)
+    """
+    with open(csv_file_path, newline='', encoding='utf-8') as f:
+        reader = list(csv.DictReader(f))
+        for i in tqdm(range(0, len(reader), batch_size), desc="Loading edges"):
+            batch = reader[i:i+batch_size]
+            run_batch_query(query, batch)
+
+def remove_duplicate_edges():
+    query = """
+    MATCH (a:Paper)-[r:CITES]->(b:Paper)
+    WITH a, b, collect(r) AS rels
+    WHERE size(rels) > 1
+    UNWIND rels[1..] AS redundant
+    CALL {
+    WITH redundant
+    DELETE redundant
+    } IN TRANSACTIONS OF 100 ROWS
+    """
+    with driver.session() as session:
+        session.run(query)
+    print("✅ Removed duplicate CITES edges")
+
 def load_data_if_missing():
     if not check_data_presence():
         logger.info("No data found. Importing nodes and edges...")
 
-        logger.info(pformat(run_query("""
-        LOAD CSV WITH HEADERS FROM 'file:///citation_nodes.csv' AS row
-        MERGE (p:Paper {id: row.id})
-        SET p.label = row.label,
-            p.year = toInteger(row.year),
-            p.citationCount = toInteger(row.citationCount),
-            p.url = row.url,
-            p.pageRank = toFloat(row.pageRank),
-            p.abstract = row.abstract;
-        """)))
-
-        logger.info(pformat(run_query("""
-        LOAD CSV WITH HEADERS FROM 'file:///citation_edges.csv' AS row
-        MATCH (a:Paper {id: row.source_id})
-        MATCH (b:Paper {id: row.target_id})
-        MERGE (a)-[:CITES]->(b);
-        """)))
+        load_nodes_in_batches("data/citation_nodes_full.csv", batch_size=500)
+        create_index_on_paper_id()
+        remove_duplicate_nodes()
+        load_edges_in_batches("data/citation_edges_full.csv", batch_size=500)
+        remove_duplicate_edges()
         logger.info("Data load complete.")
     else:
         logger.info("Data already exists in Neo4j.")
