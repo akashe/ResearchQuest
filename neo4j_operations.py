@@ -3,7 +3,10 @@ from neo4j import GraphDatabase
 from custom_logging import logger
 from pprint import pformat
 import csv
+import time
+import re
 from tqdm import tqdm
+import json
 
 # Load Neo4j credentials from Streamlit secrets
 uri = st.secrets["neo4j"]["uri"]
@@ -12,7 +15,7 @@ password = st.secrets["neo4j"]["password"]
 
 
 # Initialize Neo4j Driver
-driver = GraphDatabase.driver(uri, auth=(user, password))
+driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=300)
 
 def run_query(query, params=None):
     with driver.session() as session:
@@ -113,16 +116,21 @@ def load_data_if_missing():
         logger.info("No data found. Importing nodes and edges...")
 
         load_nodes_in_batches("data/citation_nodes_full.csv", batch_size=500)
+        time.sleep(5)  # Wait for nodes to be created before creating index
         create_index_on_paper_id()
+        time.sleep(5) 
         remove_duplicate_nodes()
+        time.sleep(5) 
         load_edges_in_batches("data/citation_edges_full.csv", batch_size=500)
+        time.sleep(5) 
         remove_duplicate_edges()
+        time.sleep(5) 
         logger.info("Data load complete.")
     else:
         logger.info("Data already exists in Neo4j.")
 
 
-def create_topic_subgraph(topic, topic_name, graph_name):
+def create_topic_subgraph(topic, topic_name, graph_name, validate_relationships):
 
     index_check = '''
     SHOW FULLTEXT INDEXES WHERE name = "paperAbstractIndex"
@@ -160,12 +168,14 @@ def create_topic_subgraph(topic, topic_name, graph_name):
         # logger.info(f"Subgraph '{graph_name}' already exists. Skipping re-creation.")
         # return
 
-    topic = '" OR "'.join([i.strip() for i in topic.split(",")])
-    topic = f'("{topic}")'  
+    topic = [i.strip() for i in topic.split(",")]
+    topic.extend([i.lower() for i in topic])  # Add lowercase versions
+    topic = '" OR "'.join(topic)
+    topic = f'"{topic}"'  
     topic = topic.replace('"', '\\"')  # Escape quotes for Cypher query
 
     logger.info(f"Creating subgraph: {graph_name} for topic: {topic_name} with query: {topic}")
-
+    print(f'validate_relationships: {str(validate_relationships).lower()}')
     proj_q = f'''
     CALL gds.graph.project.cypher(
       "{graph_name}",
@@ -181,9 +191,77 @@ def create_topic_subgraph(topic, topic_name, graph_name):
         WHERE id(x) IN ids AND id(y) IN ids
         RETURN id(x) AS source, id(y) AS target
       ",
-      {{ validateRelationships: false }}
+      {{ validateRelationships: {str(validate_relationships).lower()} }}
     )
     '''
+
+    # def build_simple_hyphen_or_boundary_regex(var, terms):
+    #     escaped_terms = [re.escape(term.strip()) for term in terms]
+
+    #     assert len(escaped_terms) > 0, "Terms list should not be empty"
+
+    #     if len(escaped_terms) > 1:
+    #         word_boundary = f".*\\b({'|'.join(escaped_terms)})\\b.*"
+    #         hyphen_suffix = f".*\\b({'|'.join(escaped_terms)})-.*"
+    #         hyphen_prefix = f".*-({'|'.join(escaped_terms)})\\b.*"
+    #     else:
+    #         word_boundary = f".*\\b{escaped_terms[0]}\\b.*"
+    #         hyphen_suffix = f".*\\b{escaped_terms[0]}-.*"
+    #         hyphen_prefix = f".*-{escaped_terms[0]}\\b.*"
+
+    #     clauses = []
+    #     for regex in [word_boundary, hyphen_suffix, hyphen_prefix]:
+    #         clauses.append(f"{var}.label =~ \\'{regex}\\'")
+    #         clauses.append(f"{var}.abstract =~ \\'{regex}\\'")
+        
+    #     return " OR ".join(clauses)
+    
+    # def build_simple_hyphen_or_boundary_regex(var, terms):
+    #     clauses = []
+    #     for term in terms:
+    #         escaped_term = re.escape(term.strip())
+    #         regexes = [
+    #             f"(?i).*\\b{escaped_term}\\b.*",   # word boundary match
+    #             f"(?i).*{escaped_term}-.*",        # prefix match
+    #             f"(?i).*-{escaped_term}.*"         # suffix match
+    #         ]
+    #         for regex in regexes:
+    #             # safe_pattern = json.dumps(regex)  # safely escape regex for Cypher
+    #             clauses.append(f"{var}.label =~ \\'{regex}\\'")
+    #             clauses.append(f"{var}.abstract =~ \\'{regex}\\'")
+    #     return " OR ".join(clauses)
+
+
+    # # terms = [t.strip().lower() for t in topic.split(",")]
+    # terms = [t.strip() for t in topic.split(",")]
+    # where_clause_node = build_simple_hyphen_or_boundary_regex("p", terms)
+    # where_clause_x = build_simple_hyphen_or_boundary_regex("x", terms)
+    # where_clause_y = build_simple_hyphen_or_boundary_regex("y", terms)
+
+    # for t in terms:
+    #     match_clauses.append(f'toLower(p.label) CONTAINS \\"{t}\\"')
+    #     match_clauses.append(f'toLower(p.abstract) CONTAINS \\"{t}\\"')
+
+    # where_clause = " OR ".join(match_clauses)
+    # y_clause = where_clause.replace('p.', 'y.')
+    # x_clause = where_clause.replace('p.', 'x.')
+
+    # proj_q = f'''
+    #     CALL gds.graph.project.cypher(
+    #     "{graph_name}",
+    #     "
+    #         MATCH (p:Paper)
+    #         WHERE {where_clause_node}
+    #         RETURN id(p) AS id
+    #     ",
+    #     "
+    #         MATCH (x:Paper)-[:CITES]->(y:Paper)
+    #         WHERE ({where_clause_x}) AND ({where_clause_y})
+    #         RETURN id(x) AS source, id(y) AS target
+    #     ",
+    #     {{ validateRelationships: false }}
+    #     )
+    #     '''
 
     logger.info(f"Projecting subgraph... by running Cypher query:{proj_q}\n\n")
     logger.info(pformat(run_query(proj_q)))
@@ -197,15 +275,16 @@ def create_topic_subgraph(topic, topic_name, graph_name):
 
     logger.info("Computing PageRank and writing to property...")
     logger.info(pformat(run_query(pr_q)))
+    time.sleep(4)  # Wait for PageRank computation to finish
 
 
-def check_top_papers_from_last_3_years(topic_name, no_of_papers=20):
+def check_top_papers_from_last_3_years(topic_name, no_of_papers=20, from_year=2022):
     """
     Check if the top 20 papers from the last 3 years are already computed.
     """
     q = f"""
     MATCH (p:Paper)
-    WHERE p.pageRank_{topic_name} IS NOT NULL AND p.year >= 2022
+    WHERE p.pageRank_{topic_name} IS NOT NULL AND p.year >= {from_year}
     WITH p.year AS year, p
     ORDER BY p.pageRank_{topic_name} DESC
     WITH year, collect(p)[0..{no_of_papers}] AS topPapers
