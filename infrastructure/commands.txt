@@ -1,0 +1,11 @@
+# Get pods status
+kubectl get pods -n rag-system
+
+# Get logs:
+kubectl logs -n rag-system deployment/generation-service --tail=20
+
+# UI port forwarding for access UI in dev
+kubectl port-forward -n rag-system service/frontend-service 8501:8501
+
+# Delete namespaces
+kubectl delete namespace rag-system

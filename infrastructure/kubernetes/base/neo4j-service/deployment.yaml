@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neo4j-service
+  labels:
+    app: neo4j-service
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: neo4j-service
+  template:
+    metadata:
+      labels:
+        app: neo4j-service
+        tier: backend
+    spec:
+      initContainers:
+      - name: wait-for-neo4j-database
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Waiting for Neo4j database to be ready..."
+          until nc -z neo4j-database 7687; do
+            echo "Neo4j database not ready yet, waiting..."
+            sleep 2
+          done
+          echo "Neo4j database is ready!"
+      containers:
+      - name: neo4j-service
+        image: neo4j-service:latest
+        ports:
+        - containerPort: 8003
+        env:
+        - name: NEO4J_URI
+          value: "bolt://neo4j-database:7687"
+        - name: NEO4J_USER
+          value: "neo4j"
+        - name: NEO4J_PASSWORD
+          value: "password"
+        volumeMounts:
+        - name: research-data-volume
+          mountPath: /app/data
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "300m"
+          limits:
+            memory: "3Gi"
+            cpu: "800m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8003
+          initialDelaySeconds: 300
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8003
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: research-data-volume
+        hostPath:
+          path: /data
+          type: Directory

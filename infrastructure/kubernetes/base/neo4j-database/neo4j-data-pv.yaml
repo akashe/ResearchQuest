@@ -1,0 +1,12 @@
+# filepath: infrastructure/kubernetes/base/neo4j-service/neo4j-data-pv.yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: neo4j-data-pv
+spec:
+  capacity:
+    storage: 4Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /home/youruser/neo4j/data

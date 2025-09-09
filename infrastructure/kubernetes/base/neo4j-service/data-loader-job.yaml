@@ -1,0 +1,79 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: neo4j-initial-data-loader
+  labels:
+    app: neo4j-data-loader
+spec:
+  backoffLimit: 2  # Retry up to 2 times if job fails
+  template:
+    metadata:
+      labels:
+        app: neo4j-data-loader
+    spec:
+      restartPolicy: Never
+      initContainers:
+      - name: wait-for-neo4j-database
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Waiting for Neo4j database to be ready..."
+          until nc -z neo4j-database 7687; do
+            echo "Neo4j database not ready yet, waiting..."
+            sleep 2
+          done
+          echo "Neo4j database is ready!"
+      - name: wait-for-neo4j-service
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Waiting for Neo4j service to be ready..."
+          until nc -z neo4j-service 8003; do
+            echo "Neo4j service not ready yet, waiting..."
+            sleep 2
+          done
+          echo "Neo4j service is ready!"
+      containers:
+      - name: data-loader
+        image: curlimages/curl:latest
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Starting initial data load..."
+          
+          # Check if data already exists
+          response=$(curl -s -w "%{http_code}" -o /tmp/status.json http://neo4j-service:8003/data/status)
+          if [ "$response" = "200" ]; then
+            has_data=$(cat /tmp/status.json | grep -o '"has_data":[^,]*' | cut -d':' -f2)
+            if [ "$has_data" = "true" ]; then
+              echo "Data already exists, skipping load"
+              exit 0
+            fi
+          fi
+          
+          # Trigger data loading
+          echo "Triggering initial data load..."
+          curl -X POST -H "Content-Type: application/json" \
+               -d '{"force_reload": false}' \
+               http://neo4j-service:8003/data/load-initial
+          
+          # Wait for completion (poll every 30 seconds for up to 30 minutes)
+          for i in $(seq 1 60); do
+            sleep 30
+            response=$(curl -s http://neo4j-service:8003/data/status)
+            status=$(echo $response | grep -o '"status":"[^"]*"' | cut -d':' -f2 | tr -d '"')
+            echo "Data loading status: $status"
+            
+            if [ "$status" = "completed" ]; then
+              echo "Data loading completed successfully!"
+              exit 0
+            elif [ "$status" = "failed" ]; then
+              echo "Data loading failed!"
+              exit 1
+            fi
+          done
+          
+          echo "Data loading timeout after 30 minutes"
+          exit 1

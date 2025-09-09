@@ -1,0 +1,11 @@
+# filepath: infrastructure/kubernetes/base/neo4j-service/neo4j-data-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: neo4j-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 4Gi

@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- namespace.yaml
+- secrets.yaml
+- query-service/deployment.yaml
+- retrieval-service/deployment.yaml
+- generation-service/deployment.yaml
+- frontend-service/deployment.yaml
+- neo4j-database/neo4j-data-pvc.yaml
+- neo4j-database/deployment.yaml
+- neo4j-database/service.yaml
+- neo4j-service/deployment.yaml
+- neo4j-service/service.yaml
+- neo4j-service/data-loader-job.yaml
