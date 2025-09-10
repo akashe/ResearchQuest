@@ -17,8 +17,16 @@ from genai import (
 )
 import pandas as pd
 from custom_logging import logger
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
 
 app = FastAPI(title="Generation Service", version="1.0.0")
+
+# Metrics
+LLM_REQUESTS = Counter('generation_service_llm_requests_total', 'Total LLM requests', ['operation'])
+LLM_TOKENS = Counter('generation_service_llm_tokens_total', 'Total LLM tokens', ['type'])
+LLM_COST = Counter('generation_service_llm_cost_usd_total', 'Total LLM cost in USD')
+REQUEST_DURATION = Histogram('generation_service_request_duration_seconds', 'Request duration')
 
 class TopicEvolutionRequest(BaseModel):
     papers: List[Dict[str, Any]]
@@ -42,6 +50,10 @@ class CustomQuestionRequest(BaseModel):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "generation-service"}
+
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/analyze/topic-evolution")
 async def analyze_topic_evolution(request: TopicEvolutionRequest):

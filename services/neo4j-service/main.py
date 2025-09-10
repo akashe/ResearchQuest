@@ -10,8 +10,16 @@ from data_loader import (
     get_database_stats
 )
 from custom_logging import logger
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
 
 app = FastAPI(title="Neo4j Service", version="1.0.0")
+
+# Metrics
+DATA_LOADING_DURATION = Histogram('neo4j_service_data_loading_duration_seconds', 'Data loading duration')
+NODES_LOADED = Gauge('neo4j_service_nodes_loaded_total', 'Total nodes loaded')
+RELATIONSHIPS_LOADED = Gauge('neo4j_service_relationships_loaded_total', 'Total relationships loaded')
+DATA_LOADING_PROGRESS = Gauge('neo4j_service_data_loading_progress_percent', 'Data loading progress percentage')
 
 # Global state
 data_loading_status = {
@@ -42,6 +50,22 @@ async def health_check():
             "service": "neo4j-service",
             "error": str(e)
         }
+
+@app.get("/metrics")
+async def metrics():
+    # Update node/relationship metrics before returning
+    try:
+        stats = get_database_stats()
+        if stats and 'statistics' in stats:
+            node_count = stats['statistics'].get('node_count', 0)
+            relationship_count = stats['statistics'].get('edge_count', 0)
+            # Set the metrics to current values using Gauge.set()
+            NODES_LOADED.set(node_count)
+            RELATIONSHIPS_LOADED.set(relationship_count)
+    except Exception as e:
+        logger.warning(f"Could not update node/relationship metrics: {e}")
+    
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/health/database")
 async def database_health():
@@ -137,23 +161,45 @@ async def run_data_loading():
     """Background task to load data"""
     global data_loading_status
     
+    # Start timing the data loading
+    start_time = time.time()
+    
     try:
         logger.info("Starting initial data loading...")
         data_loading_status["message"] = "Loading nodes..."
         data_loading_status["progress"] = 10
+        DATA_LOADING_PROGRESS.set(10)
         
         # Load the data
         load_initial_data()
+        
+        # Get final database stats for metrics
+        try:
+            stats = get_database_stats()
+            if stats and 'statistics' in stats:
+                node_count = stats['statistics'].get('node_count', 0)
+                relationship_count = stats['statistics'].get('edge_count', 0)
+                NODES_LOADED.set(node_count)
+                RELATIONSHIPS_LOADED.set(relationship_count)
+                logger.info(f"Updated metrics: {node_count} nodes, {relationship_count} relationships")
+        except Exception as e:
+            logger.warning(f"Could not update node/relationship metrics: {e}")
+        
+        # Record completion metrics
+        end_time = time.time()
+        loading_duration = end_time - start_time
+        DATA_LOADING_DURATION.observe(loading_duration)
+        DATA_LOADING_PROGRESS.set(100)
         
         data_loading_status = {
             "status": "completed",
             "message": "Initial data loading completed successfully",
             "progress": 100,
             "start_time": data_loading_status["start_time"],
-            "end_time": time.time()
+            "end_time": end_time
         }
         
-        logger.info("Initial data loading completed successfully")
+        logger.info(f"Initial data loading completed successfully in {loading_duration:.2f} seconds")
         
     except Exception as e:
         logger.error(f"Data loading failed: {str(e)}")

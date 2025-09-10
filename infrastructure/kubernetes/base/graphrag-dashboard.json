@@ -1,0 +1,157 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "GraphRAG System Metrics",
+    "tags": ["graphrag", "microservices"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Service Health (Up/Down)",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "up",
+            "legendFormat": "{{job}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {"options": {"0": {"text": "DOWN"}}, "type": "value"},
+              {"options": {"1": {"text": "UP"}}, "type": "value"}
+            ],
+            "thresholds": {
+              "steps": [
+                {"color": "red", "value": 0},
+                {"color": "green", "value": 1}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 2,
+        "title": "API Request Rate (req/sec)",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(query_service_requests_total[5m])",
+            "legendFormat": "Query Service - {{endpoint}}"
+          },
+          {
+            "expr": "rate(retrieval_service_requests_total[5m])",
+            "legendFormat": "Retrieval Service - {{endpoint}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Neo4j Database Stats",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "neo4j_service_nodes_loaded_total",
+            "legendFormat": "Nodes Loaded"
+          },
+          {
+            "expr": "neo4j_service_relationships_loaded_total",
+            "legendFormat": "Relationships Loaded"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8}
+      },
+      {
+        "id": 4,
+        "title": "LLM Token Usage",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(generation_service_llm_tokens_total[5m])",
+            "legendFormat": "{{type}} tokens/sec"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8}
+      },
+      {
+        "id": 5,
+        "title": "LLM Costs (USD)",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "generation_service_llm_cost_usd_total",
+            "legendFormat": "Total Cost"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+        "fieldConfig": {
+          "defaults": {
+            "unit": "currencyUSD"
+          }
+        }
+      },
+      {
+        "id": 6,
+        "title": "Papers Retrieved by Topic",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(retrieval_service_papers_retrieved_total[5m])",
+            "legendFormat": "{{topic}} - {{operation}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+      },
+      {
+        "id": 7,
+        "title": "Neo4j Query Performance",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "retrieval_service_neo4j_query_duration_seconds",
+            "legendFormat": "{{query_type}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+      },
+      {
+        "id": 8,
+        "title": "Data Loading Progress",
+        "type": "gauge",
+        "targets": [
+          {
+            "expr": "neo4j_service_data_loading_progress_percent",
+            "legendFormat": "Loading Progress"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 6, "x": 0, "y": 24},
+        "fieldConfig": {
+          "defaults": {
+            "max": 100,
+            "min": 0,
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "Generation Service Response Times",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "generation_service_request_duration_seconds",
+            "legendFormat": "Response Time"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 18, "x": 6, "y": 24}
+      }
+    ],
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "refresh": "10s"
+  }
+}

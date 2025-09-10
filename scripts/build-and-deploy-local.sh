@@ -124,6 +124,12 @@ fi
 echo -e "${GREEN}Query API: kubectl port-forward -n rag-system service/query-service 8000:8000${NC}"
 echo -e "${GREEN}Then access: http://localhost:8000/docs${NC}"
 
+echo -e "${GREEN}📊 Monitoring URLs:${NC}"
+echo -e "${YELLOW}Grafana: kubectl port-forward -n rag-system service/grafana 3000:3000${NC}"
+echo -e "${YELLOW}Then access: http://localhost:3000 (admin/admin123)${NC}"
+echo -e "${YELLOW}Prometheus: kubectl port-forward -n rag-system service/prometheus 9090:9090${NC}"
+echo -e "${YELLOW}Then access: http://localhost:9090${NC}"
+
 echo -e "${GREEN}🎉 Deployment completed successfully!${NC}"
 echo -e "${YELLOW}💡 To check logs: kubectl logs -f deployment/<service-name> -n rag-system${NC}"
 echo -e "${YELLOW}💡 To clean up: kubectl delete namespace rag-system${NC}"

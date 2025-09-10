@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  labels:
+    app: grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        ports:
+        - containerPort: 3000
+        env:
+        - name: GF_SECURITY_ADMIN_PASSWORD
+          value: "admin123"
+        volumeMounts:
+        - name: grafana-datasource
+          mountPath: /etc/grafana/provisioning/datasources
+        - name: grafana-dashboards
+          mountPath: /etc/grafana/provisioning/dashboards
+        - name: graphrag-dashboard
+          mountPath: /var/lib/grafana/dashboards
+      volumes:
+      - name: grafana-datasource
+        configMap:
+          name: grafana-datasource
+      - name: grafana-dashboards
+        configMap:
+          name: grafana-dashboards
+      - name: graphrag-dashboard
+        configMap:
+          name: graphrag-dashboard
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+spec:
+  selector:
+    app: grafana
+  ports:
+  - port: 3000
+    targetPort: 3000
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource
+data:
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+    - name: Prometheus
+      type: prometheus
+      access: proxy
+      url: http://prometheus:9090
+      isDefault: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+data:
+  dashboard.yaml: |
+    apiVersion: 1
+    providers:
+    - name: 'default'
+      orgId: 1
+      folder: ''
+      type: file
+      disableDeletion: false
+      editable: true
+      options:
+        path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: graphrag-dashboard
+data:
+  graphrag-dashboard.json: |
+    {
+      "id": null,
+      "title": "GraphRAG System Metrics - Auto Generated", 
+      "tags": ["graphrag", "microservices"],
+      "timezone": "browser",
+      "panels": [
+        {
+          "id": 1,
+          "title": "Service Health",
+          "type": "stat",
+          "targets": [{"expr": "up", "legendFormat": "{{job}}"}],
+          "gridPos": {"h": 6, "w": 8, "x": 0, "y": 0}
+        },
+        {
+          "id": 2,
+          "title": "Neo4j Database Stats",
+          "type": "stat", 
+          "targets": [
+            {"expr": "neo4j_service_nodes_loaded_total", "legendFormat": "Nodes"},
+            {"expr": "neo4j_service_relationships_loaded_total", "legendFormat": "Relationships"}
+          ],
+          "gridPos": {"h": 6, "w": 8, "x": 8, "y": 0}
+        },
+        {
+          "id": 3,
+          "title": "LLM Costs (USD)",
+          "type": "stat",
+          "targets": [{"expr": "generation_service_llm_cost_usd_total", "legendFormat": "Total Cost"}],
+          "gridPos": {"h": 6, "w": 8, "x": 16, "y": 0}
+        },
+        {
+          "id": 4,
+          "title": "API Request Rate",
+          "type": "timeseries",
+          "targets": [
+            {"expr": "rate(query_service_requests_total[5m])", "legendFormat": "Query - {{endpoint}}"},
+            {"expr": "rate(retrieval_service_requests_total[5m])", "legendFormat": "Retrieval - {{endpoint}}"}
+          ],
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 6}
+        }
+      ],
+      "time": {"from": "now-1h", "to": "now"},
+      "refresh": "10s"
+    }

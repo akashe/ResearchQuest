@@ -14,3 +14,5 @@ resources:
 - neo4j-service/deployment.yaml
 - neo4j-service/service.yaml
 - neo4j-service/data-loader-job.yaml
+- prometheus.yaml
+- grafana.yaml

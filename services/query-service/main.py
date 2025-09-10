@@ -3,8 +3,16 @@ from pydantic import BaseModel
 from typing import List, Optional
 import requests
 import logging
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+import time
 
 app = FastAPI(title="Query Service", version="1.0.0")
+
+# Metrics
+REQUEST_COUNT = Counter('query_service_requests_total', 'Total requests', ['method', 'endpoint'])
+REQUEST_DURATION = Histogram('query_service_request_duration_seconds', 'Request duration')
+PAPERS_PROCESSED = Counter('query_service_papers_processed_total', 'Total papers processed', ['topic'])
 
 # Request/Response models
 class SubgraphRequest(BaseModel):
@@ -37,6 +45,10 @@ GENERATION_SERVICE_URL = "http://generation-service:8002"
 async def health_check():
     return {"status": "healthy", "service": "query-service"}
 
+@app.get("/metrics")
+async def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 @app.post("/subgraph/create")
 async def create_subgraph(request: SubgraphRequest):
     """Create a topic subgraph via retrieval service"""
@@ -54,6 +66,8 @@ async def create_subgraph(request: SubgraphRequest):
 @app.post("/papers/top-recent")
 async def get_top_recent_papers(request: QueryRequest):
     """Get top papers from recent years"""
+    start_time = time.time()
+    REQUEST_COUNT.labels(method='POST', endpoint='/papers/top-recent').inc()
     try:
         response = requests.post(
             f"{RETRIEVAL_SERVICE_URL}/papers/top-recent",
@@ -61,13 +75,17 @@ async def get_top_recent_papers(request: QueryRequest):
             timeout=60
         )
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        REQUEST_DURATION.observe(time.time() - start_time)
+        return result
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Retrieval service error: {str(e)}")
 
 @app.post("/papers/state-of-art")
 async def get_state_of_art_papers(request: QueryRequest):
     """Get raw papers for state of the art analysis"""
+    start_time = time.time()
+    REQUEST_COUNT.labels(method='POST', endpoint='/papers/state-of-art').inc()
     try:
         response = requests.post(
             f"{RETRIEVAL_SERVICE_URL}/papers/state-of-art",
@@ -82,6 +100,8 @@ async def get_state_of_art_papers(request: QueryRequest):
 @app.post("/analysis/state-of-art")
 async def analyze_state_of_art(request: QueryRequest):
     """Get state of the art analysis"""
+    start_time = time.time()
+    REQUEST_COUNT.labels(method='POST', endpoint='/analysis/state-of-art').inc()
     try:
         # Get papers from retrieval service
         papers_response = requests.post(
@@ -108,7 +128,10 @@ async def analyze_state_of_art(request: QueryRequest):
             timeout=240
         )
         analysis_response.raise_for_status()
-        return analysis_response.json()
+        result = analysis_response.json()
+        PAPERS_PROCESSED.labels(topic=request.topic_name).inc(len(result.get('papers', [])))
+        REQUEST_DURATION.observe(time.time() - start_time)
+        return result
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Service communication error: {str(e)}")
 
