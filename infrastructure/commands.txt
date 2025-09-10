@@ -9,3 +9,9 @@ kubectl port-forward -n rag-system service/frontend-service 8501:8501
 
 # Delete namespaces
 kubectl delete namespace rag-system
+
+# Restart a specific container
+kubectl rollout restart deployment/query-service -n rag-system
+
+# Rebuild a specific docker
+docker build -t frontend-service:dev services/frontend-service/   

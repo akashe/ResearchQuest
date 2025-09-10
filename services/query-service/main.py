@@ -15,7 +15,7 @@ class SubgraphRequest(BaseModel):
 class QueryRequest(BaseModel):
     topic_name: str
     year_cutoff: Optional[int] = None
-    num_papers: Optional[int] = 20
+    num_chunks: Optional[int] = 20
     from_year: Optional[int] = 2022
 
 class CustomQuestionRequest(BaseModel):
@@ -23,6 +23,11 @@ class CustomQuestionRequest(BaseModel):
     topic_name: str
     year_cutoff: int
     num_chunks: int = 4
+
+class TopicEvolutionRequest(BaseModel):
+    topic_name: str
+    num_papers: int = 20
+    from_year: int = 2022
 
 # Service URLs - will be configured via environment
 RETRIEVAL_SERVICE_URL = "http://retrieval-service:8001"
@@ -60,6 +65,20 @@ async def get_top_recent_papers(request: QueryRequest):
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Retrieval service error: {str(e)}")
 
+@app.post("/papers/state-of-art")
+async def get_state_of_art_papers(request: QueryRequest):
+    """Get raw papers for state of the art analysis"""
+    try:
+        response = requests.post(
+            f"{RETRIEVAL_SERVICE_URL}/papers/state-of-art",
+            json=request.dict(),
+            timeout=60
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Retrieval service error: {str(e)}")
+
 @app.post("/analysis/state-of-art")
 async def analyze_state_of_art(request: QueryRequest):
     """Get state of the art analysis"""
@@ -67,7 +86,11 @@ async def analyze_state_of_art(request: QueryRequest):
         # Get papers from retrieval service
         papers_response = requests.post(
             f"{RETRIEVAL_SERVICE_URL}/papers/state-of-art",
-            json=request.dict(),
+            json={
+                "topic_name": request.topic_name,
+                "year_cutoff": request.year_cutoff,
+                "num_papers": 5000
+            },
             timeout=60
         )
         papers_response.raise_for_status()
@@ -77,9 +100,50 @@ async def analyze_state_of_art(request: QueryRequest):
         analysis_response = requests.post(
             f"{GENERATION_SERVICE_URL}/analyze/state-of-art",
             json={
-                "papers": papers_data,
+                "papers": papers_data.get("papers", []),
                 "topic_name": request.topic_name,
-                "year_cutoff": request.year_cutoff
+                "year_cutoff": request.year_cutoff,
+                "num_chunks": request.num_chunks
+            },
+            timeout=240
+        )
+        analysis_response.raise_for_status()
+        return analysis_response.json()
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Service communication error: {str(e)}")
+
+@app.get("/papers/year-distribution/{topic_name}")
+async def get_year_distribution(topic_name: str):
+    """Get year-wise distribution of papers"""
+    try:
+        response = requests.get(
+            f"{RETRIEVAL_SERVICE_URL}/papers/year-distribution/{topic_name}",
+            timeout=60
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Retrieval service error: {str(e)}")
+
+@app.post("/analysis/topic-evolution")
+async def analyze_topic_evolution(request: TopicEvolutionRequest):
+    """Generate topic evolution summary"""
+    try:
+        # Get papers from retrieval service
+        papers_response = requests.post(
+            f"{RETRIEVAL_SERVICE_URL}/papers/top-recent",
+            json=request.dict(),
+            timeout=60
+        )
+        papers_response.raise_for_status()
+        papers_data = papers_response.json()
+        
+        # Generate evolution analysis via generation service
+        analysis_response = requests.post(
+            f"{GENERATION_SERVICE_URL}/analyze/topic-evolution",
+            json={
+                "papers": papers_data.get("papers", []),
+                "topic_name": request.topic_name
             },
             timeout=120
         )
@@ -98,7 +162,7 @@ async def ask_custom_question(request: CustomQuestionRequest):
             json={
                 "topic_name": request.topic_name,
                 "year_cutoff": request.year_cutoff,
-                "num_papers": request.num_chunks * 500
+                "num_papers": 5000
             },
             timeout=60
         )
@@ -110,7 +174,7 @@ async def ask_custom_question(request: CustomQuestionRequest):
             f"{GENERATION_SERVICE_URL}/question/answer",
             json={
                 "question": request.question,
-                "papers": papers_data,
+                "papers": papers_data.get("papers", []),
                 "topic_name": request.topic_name,
                 "year_cutoff": request.year_cutoff,
                 "num_chunks": request.num_chunks

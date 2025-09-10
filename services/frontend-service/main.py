@@ -84,8 +84,14 @@ if st.session_state.graph_name:
         st.subheader("Top Papers from Last N Years")
         papers_per_year = st.number_input("How many top papers per year?", min_value=1, max_value=50, value=20, step=1)
         from_year = st.number_input("From which year?", min_value=2019, max_value=2025, value=2022, step=1)
+        show_evolution = st.radio(
+            "Generate topic evolution summary?",
+            options=["Yes", "No"],
+            index=0,
+            horizontal=True
+        ) == "Yes"
 
-        if st.button("Get Top Papers"):
+        if st.button("Top Papers from Last N Years"):
             with st.spinner("Retrieving papers..."):
                 result = call_api("/papers/top-recent", {
                     "topic_name": topic_name,
@@ -98,57 +104,104 @@ if st.session_state.graph_name:
                     df_display = df.drop(columns=["ID", "Abstract"], errors='ignore')
                     st.dataframe(df_display, use_container_width=True)
                     st.info(f"Found {result.get('count', 0)} papers")
+                    
+                    if show_evolution:
+                        with st.spinner("Generating topic evolution summary..."):
+                            evolution_result = call_api("/analysis/topic-evolution", {
+                                "topic_name": topic_name,
+                                "num_papers": papers_per_year,
+                                "from_year": from_year
+                            })
+                            
+                            if evolution_result and evolution_result.get("summary"):
+                                st.markdown("#### Topic Evolution Summary")
+                                st.markdown(evolution_result["summary"], unsafe_allow_html=True)
+                            else:
+                                st.warning("Failed to generate topic evolution summary")
                 else:
                     st.warning("No papers found")
 
     st.divider()
 
-    # --- Section 2: State of the Art Analysis ---
-    with st.expander("🔍 State of the Art Analysis", expanded=True):
-        st.subheader("State of the Art Analysis")
-        year_cutoff = st.number_input("After Year", 1900, 2100, 2022)
-        num_chunks = st.number_input("How many chunks to process?", min_value=1, max_value=20, value=4, step=1)
-
-        if st.button("Generate State of Art Analysis"):
-            with st.spinner("Analyzing state of the art..."):
-                result = call_api("/analysis/state-of-art", {
-                    "topic_name": topic_name,
-                    "year_cutoff": year_cutoff,
-                    "num_papers": num_chunks * 500
-                })
+    # --- Section 2: Year-wise Distribution ---
+    with st.expander("📊 Year-wise Distribution", expanded=True):
+        st.subheader("Year-wise Distribution")
+        if st.button("Year-wise Distribution"):
+            with st.spinner("Getting year-wise distribution..."):
+                result = call_api(f"/papers/year-distribution/{topic_name}", method="GET")
                 
-                if result and result.get("analysis"):
-                    st.markdown("### State of the Art Analysis")
-                    st.markdown(result["analysis"], unsafe_allow_html=True)
-                    st.info(f"Processed {result.get('papers_processed', 0)} papers in {result.get('chunks_processed', 0)} chunks")
+                if result and result.get("distribution"):
+                    df = pd.DataFrame(result["distribution"])
+                    if not df.empty and "year" in df.columns and "paperCount" in df.columns:
+                        st.bar_chart(df.set_index("year")["paperCount"])
+                        st.info(f"Showing distribution for {topic_name}")
+                    else:
+                        st.warning("No distribution data available")
                 else:
-                    st.error("Failed to generate analysis")
+                    st.warning("Failed to get year-wise distribution")
 
     st.divider()
 
-    # --- Section 3: Custom Question ---
-    with st.expander("🤖 Custom Question", expanded=True):
-        st.subheader("Ask a Custom Question")
-        year_cutoff_q = st.number_input("After Year (for question)", 1900, 2100, 2022, key="q_year")
-        user_question = st.text_input("Ask a custom question:")
-        num_chunks_q = st.number_input("How many chunks to process? (for question)", min_value=1, max_value=20, value=4, step=1, key="q_chunks")
+    # --- Section 3: State of the Art / Custom Question ---
+    with st.expander("🔍 State of the Art / Custom Question", expanded=True):
+        st.subheader("State of the Art / Custom Question")
+        year_cutoff = st.number_input("After Year", 1900, 2100, 2022)
+        user_question = st.text_input("Ask a custom question (leave blank to get a summary):")
+        num_chunks = st.number_input("How many chunks to process?", min_value=1, max_value=20, value=4, step=1)
 
-        if st.button("Ask Question") and user_question:
-            with st.spinner("Processing your question..."):
-                result = call_api("/question/custom", {
-                    "question": user_question,
-                    "topic_name": topic_name,
-                    "year_cutoff": year_cutoff_q,
-                    "num_chunks": num_chunks_q
-                })
-                
-                if result and result.get("answer"):
-                    st.markdown("### Answer")
-                    st.markdown(result["answer"], unsafe_allow_html=True)
-                    st.info(f"Question: {result.get('question')}")
-                    st.info(f"Processed {result.get('papers_processed', 0)} papers")
+        if st.button("Top Papers After Year"):
+            ask_question = bool(user_question.strip())
+            
+            with st.spinner("Processing request..."):
+                if ask_question:
+                    # Ask custom question - generation service handles chunking
+                    result = call_api("/question/custom", {
+                        "question": user_question,
+                        "topic_name": topic_name,
+                        "year_cutoff": year_cutoff,
+                        "num_chunks": num_chunks
+                    })
+                    
+                    if result:
+                        # Show first 100 papers table
+                        if result.get("papers"):
+                            table_df = pd.DataFrame(result["papers"][:100])
+                            table_df_display = table_df.drop(columns=["ID", "Abstract"], errors='ignore')
+                            st.dataframe(table_df_display, use_container_width=True)
+                        
+                        # Show the answer
+                        if result.get("answer"):
+                            st.markdown("### Answer")
+                            st.markdown(result["answer"], unsafe_allow_html=True)
+                            st.info(f"Processed {result.get('papers_processed', 0)} papers in {result.get('chunks_processed', 0)} chunks")
+                        else:
+                            st.error("No answer generated")
+                    else:
+                        st.error("Failed to answer question")
                 else:
-                    st.error("Failed to answer question")
+                    # Get state of art analysis - generation service handles chunking
+                    result = call_api("/analysis/state-of-art", {
+                        "topic_name": topic_name,
+                        "year_cutoff": year_cutoff,
+                        "num_chunks": num_chunks  # Let backend know how many papers to process
+                    })
+                    
+                    if result:
+                        # Show first 100 papers table
+                        if result.get("papers"):
+                            table_df = pd.DataFrame(result["papers"][:100])
+                            table_df_display = table_df.drop(columns=["ID", "Abstract"], errors='ignore')
+                            st.dataframe(table_df_display, use_container_width=True)
+                        
+                        # Show the analysis
+                        if result.get("analysis"):
+                            st.markdown("### State of the Art Analysis")
+                            st.markdown(result["analysis"], unsafe_allow_html=True)
+                            st.info(f"Processed {result.get('papers_processed', 0)} papers in {result.get('chunks_processed', 0)} chunks")
+                        else:
+                            st.error("No analysis generated")
+                    else:
+                        st.error("Failed to generate analysis")
 
 else:
     st.info("👆 Please create a subgraph first to enable analysis features")
