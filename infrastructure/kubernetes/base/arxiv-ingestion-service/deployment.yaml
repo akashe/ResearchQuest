@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arxiv-ingestion-service
+  namespace: rag-system
+  labels:
+    app: arxiv-ingestion-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: arxiv-ingestion-service
+  template:
+    metadata:
+      labels:
+        app: arxiv-ingestion-service
+    spec:
+      containers:
+      - name: arxiv-ingestion-service
+        image: arxiv-ingestion-service:dev
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8004
+        env:
+        - name: KAGGLE_CONFIG_DIR
+          value: "/home/appuser/.kaggle"
+        volumeMounts:
+        - name: kaggle-credentials
+          mountPath: /home/appuser/.kaggle
+          readOnly: true
+        - name: data-volume
+          mountPath: /data
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "8Gi"  # Increased for large arXiv dataset processing
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8004
+          initialDelaySeconds: 300
+          periodSeconds: 600
+          timeoutSeconds: 500
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8004
+          initialDelaySeconds: 500
+          periodSeconds: 600
+          timeoutSeconds: 500
+          failureThreshold: 5
+      volumes:
+      - name: kaggle-credentials
+        secret:
+          secretName: kaggle-credentials
+          items:
+          - key: kaggle.json
+            path: kaggle.json
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: arxiv-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: arxiv-ingestion-service
+  namespace: rag-system
+  labels:
+    app: arxiv-ingestion-service
+spec:
+  selector:
+    app: arxiv-ingestion-service
+  ports:
+  - port: 8004
+    targetPort: 8004
+    name: http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: arxiv-data-pvc
+  namespace: rag-system
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi  # Large enough for arXiv metadata + processing

@@ -16,3 +16,9 @@ resources:
 - neo4j-service/data-loader-job.yaml
 - prometheus.yaml
 - grafana.yaml
+- kaggle-secret.yaml
+- arxiv-ingestion-service/deployment.yaml
+- kafka.yaml
+- redis.yaml
+- airflow.yaml
+- data-pipeline-service/deployment.yaml

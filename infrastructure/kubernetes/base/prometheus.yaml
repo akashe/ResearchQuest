@@ -78,3 +78,9 @@ data:
     - job_name: 'neo4j-service'
       static_configs:
       - targets: ['neo4j-service:8003']
+    - job_name: 'arxiv-ingestion-service'
+      static_configs:
+      - targets: ['arxiv-ingestion-service:8004']
+    - job_name: 'data-pipeline-service'
+      static_configs:
+      - targets: ['data-pipeline-service:8005']

@@ -9,6 +9,12 @@ NC='\033[0m' # No Color
 
 echo -e "${GREEN}🚀 Building and deploying GraphRAG microservices locally${NC}"
 
+# Clean up Docker space before deployment
+echo -e "${YELLOW}🧹 Cleaning up Docker resources to free space...${NC}"
+docker system prune -f --volumes 2>/dev/null || true
+docker image prune -a -f 2>/dev/null || true
+echo -e "${GREEN}✅ Docker cleanup completed${NC}"
+
 # Check if Docker is running
 if ! docker info > /dev/null 2>&1; then
     echo -e "${RED}❌ Docker is not running. Please start Docker first.${NC}"
@@ -81,6 +87,19 @@ for service in "${services[@]}"; do
     # Adding common files like custom_logging.py
     mkdir -p shared
     cp ../../custom_logging.py shared/
+
+    docker build -t "${service}:dev" .
+    cd "../.."
+    echo -e "${GREEN}✅ ${service} built successfully${NC}"
+done
+
+# Build all Docker images
+data_services=("arxiv-ingestion-service")
+
+echo -e "${GREEN}📦 Building Docker images...${NC}"
+for service in "${data_services[@]}"; do
+    echo -e "${YELLOW}Building ${service}...${NC}"
+    cd "services/${service}"
 
     docker build -t "${service}:dev" .
     cd "../.."

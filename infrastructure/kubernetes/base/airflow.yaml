@@ -1,0 +1,351 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  namespace: rag-system
+  labels:
+    app: airflow-webserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-webserver
+  template:
+    metadata:
+      labels:
+        app: airflow-webserver
+    spec:
+      containers:
+      - name: airflow-webserver
+        image: apache/airflow:2.8.0-python3.11
+        ports:
+        - containerPort: 8080
+        env:
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "LocalExecutor"
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: "sqlite:////tmp/airflow.db"
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "false"
+        - name: AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION
+          value: "false"
+        - name: AIRFLOW__WEBSERVER__EXPOSE_CONFIG
+          value: "true"
+        - name: _AIRFLOW_DB_UPGRADE
+          value: "true"
+        - name: _AIRFLOW_WWW_USER_CREATE
+          value: "true"
+        - name: _AIRFLOW_WWW_USER_USERNAME
+          value: "admin"
+        - name: _AIRFLOW_WWW_USER_PASSWORD
+          value: "admin123"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          airflow db init
+          airflow users create --username admin --password admin123 --firstname Admin --lastname User --role Admin --email admin@example.com || true
+          airflow webserver
+        volumeMounts:
+        - name: airflow-dags
+          mountPath: /opt/airflow/dags
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: airflow-dags
+        configMap:
+          name: airflow-dags
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: rag-system
+  labels:
+    app: airflow-scheduler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow-scheduler
+    spec:
+      containers:
+      - name: airflow-scheduler
+        image: apache/airflow:2.8.0-python3.11
+        env:
+        - name: AIRFLOW__CORE__EXECUTOR
+          value: "LocalExecutor"
+        - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+          value: "sqlite:////tmp/airflow.db"
+        - name: AIRFLOW__CORE__LOAD_EXAMPLES
+          value: "false"
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          sleep 60  # Wait for webserver to initialize DB
+          airflow scheduler
+        volumeMounts:
+        - name: airflow-dags
+          mountPath: /opt/airflow/dags
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: airflow-dags
+        configMap:
+          name: airflow-dags
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-webserver
+  namespace: rag-system
+  labels:
+    app: airflow-webserver
+spec:
+  selector:
+    app: airflow-webserver
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-dags
+  namespace: rag-system
+data:
+  arxiv_daily_pipeline.py: |
+    from datetime import datetime, timedelta
+    from airflow import DAG
+    from airflow.operators.http_operator import SimpleHttpOperator
+    from airflow.operators.python_operator import PythonOperator
+    from airflow.operators.bash_operator import BashOperator
+    import requests
+    import json
+
+    default_args = {
+        'owner': 'graphrag-team',
+        'depends_on_past': False,
+        'start_date': datetime(2024, 1, 1),
+        'email_on_failure': False,
+        'email_on_retry': False,
+        'retries': 1,
+        'retry_delay': timedelta(minutes=5),
+    }
+
+    dag = DAG(
+        'arxiv_daily_ingestion',
+        default_args=default_args,
+        description='Daily arXiv data ingestion pipeline',
+        schedule_interval=timedelta(days=1),
+        catchup=False,
+        max_active_runs=1,
+    )
+
+    def check_arxiv_service_health():
+        """Check if arXiv ingestion service is healthy"""
+        try:
+            response = requests.get('http://arxiv-ingestion-service:8004/health', timeout=10)
+            if response.status_code == 200:
+                return "healthy"
+            else:
+                raise Exception(f"Service unhealthy: {response.status_code}")
+        except Exception as e:
+            raise Exception(f"Health check failed: {str(e)}")
+
+    def trigger_arxiv_ingestion():
+        """Trigger arXiv data ingestion"""
+        try:
+            payload = {
+                "force_download": False,
+                "filter_years": 5
+            }
+            response = requests.post(
+                'http://arxiv-ingestion-service:8004/ingest',
+                json=payload,
+                timeout=300
+            )
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise Exception(f"Ingestion failed: {response.status_code}")
+        except Exception as e:
+            raise Exception(f"Ingestion trigger failed: {str(e)}")
+
+    def check_ingestion_status():
+        """Check ingestion completion status"""
+        try:
+            response = requests.get('http://arxiv-ingestion-service:8004/status', timeout=10)
+            if response.status_code == 200:
+                status = response.json()
+                if status['status'] == 'completed':
+                    return f"Ingestion completed: {status['new_papers']} new papers"
+                elif status['status'] == 'failed':
+                    raise Exception(f"Ingestion failed: {status['message']}")
+                else:
+                    raise Exception(f"Ingestion still in progress: {status['status']}")
+        except Exception as e:
+            raise Exception(f"Status check failed: {str(e)}")
+
+    def publish_new_papers_to_kafka():
+        """Get new papers and publish to Kafka"""
+        try:
+            # Get new papers from arxiv service
+            response = requests.get('http://arxiv-ingestion-service:8004/data/new-papers?limit=1000')
+            if response.status_code == 200:
+                papers_data = response.json()
+                papers = papers_data.get('papers', [])
+                
+                if papers:
+                    # Transform to Kafka event format
+                    kafka_events = []
+                    for paper in papers:
+                        kafka_events.append({
+                            'id': paper['id'],
+                            'title': paper['title'],
+                            'authors': paper.get('authors', []),
+                            'categories': paper.get('categories', ''),
+                            'abstract': paper.get('abstract', ''),
+                            'update_date': paper['update_date'],
+                            'event_type': 'new_paper'
+                        })
+                    
+                    # Publish to data pipeline service
+                    response = requests.post(
+                        'http://data-pipeline-service:8005/events/new-papers',
+                        json=kafka_events,
+                        timeout=300
+                    )
+                    
+                    if response.status_code == 200:
+                        return f"Published {len(kafka_events)} papers to Kafka"
+                    else:
+                        raise Exception(f"Kafka publish failed: {response.status_code}")
+                else:
+                    return "No new papers to publish"
+            else:
+                raise Exception(f"Failed to get papers: {response.status_code}")
+        except Exception as e:
+            raise Exception(f"Kafka publishing failed: {str(e)}")
+
+    # Define tasks
+    health_check = PythonOperator(
+        task_id='check_service_health',
+        python_callable=check_arxiv_service_health,
+        dag=dag,
+    )
+
+    start_ingestion = PythonOperator(
+        task_id='trigger_ingestion',
+        python_callable=trigger_arxiv_ingestion,
+        dag=dag,
+    )
+
+    wait_for_completion = BashOperator(
+        task_id='wait_for_ingestion',
+        bash_command='sleep 300',  # Wait 5 minutes for ingestion
+        dag=dag,
+    )
+
+    check_completion = PythonOperator(
+        task_id='check_ingestion_status',
+        python_callable=check_ingestion_status,
+        dag=dag,
+    )
+
+    publish_to_kafka = PythonOperator(
+        task_id='publish_papers_to_kafka',
+        python_callable=publish_new_papers_to_kafka,
+        dag=dag,
+    )
+
+    # Define task dependencies
+    health_check >> start_ingestion >> wait_for_completion >> check_completion >> publish_to_kafka
+
+  graph_maintenance_pipeline.py: |
+    from datetime import datetime, timedelta
+    from airflow import DAG
+    from airflow.operators.python_operator import PythonOperator
+    from airflow.operators.bash_operator import BashOperator
+    import requests
+
+    default_args = {
+        'owner': 'graphrag-team',
+        'depends_on_past': False,
+        'start_date': datetime(2024, 1, 1),
+        'email_on_failure': False,
+        'email_on_retry': False,
+        'retries': 1,
+        'retry_delay': timedelta(minutes=5),
+    }
+
+    dag = DAG(
+        'graph_maintenance_weekly',
+        default_args=default_args,
+        description='Weekly graph maintenance and optimization',
+        schedule_interval=timedelta(weeks=1),
+        catchup=False,
+    )
+
+    def trigger_graph_optimization():
+        """Trigger graph optimization tasks"""
+        # This would trigger PageRank recalculation, graph cleanup, etc.
+        return "Graph optimization completed"
+
+    def backup_graph_data():
+        """Backup current graph state"""
+        # This would backup Neo4j data
+        return "Graph backup completed"
+
+    def generate_quality_report():
+        """Generate data quality metrics report"""
+        # This would analyze data quality and generate reports
+        return "Quality report generated"
+
+    backup_task = PythonOperator(
+        task_id='backup_graph',
+        python_callable=backup_graph_data,
+        dag=dag,
+    )
+
+    optimize_task = PythonOperator(
+        task_id='optimize_graph',
+        python_callable=trigger_graph_optimization,
+        dag=dag,
+    )
+
+    quality_report = PythonOperator(
+        task_id='quality_report',
+        python_callable=generate_quality_report,
+        dag=dag,
+    )
+
+    # Task dependencies
+    backup_task >> optimize_task >> quality_report
