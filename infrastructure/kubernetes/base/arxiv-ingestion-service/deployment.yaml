@@ -90,4 +90,4 @@ spec:
   - ReadWriteOnce
   resources:
     requests:
-      storage: 20Gi  # Large enough for arXiv metadata + processing
+      storage: 8Gi  # Large enough for arXiv metadata + processing

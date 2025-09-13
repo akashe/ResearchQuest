@@ -44,36 +44,36 @@ if kubectl config current-context | grep -q "minikube"; then
     echo -e "${GREEN}🐳 Using Minikube - setting Docker environment${NC}"
     eval $(minikube docker-env)
     
-    # Mount host data directory to Minikube
-    echo -e "${GREEN}📁 Setting up data volume mount...${NC}"
-    # Kill any existing mount processes
-    pkill -f "minikube mount" || true
+    # # Mount host data directory to Minikube
+    # echo -e "${GREEN}📁 Setting up data volume mount...${NC}"
+    # # Kill any existing mount processes
+    # pkill -f "minikube mount" || true
     
-    # Start background mount for data directory
-    echo -e "${YELLOW}Mounting data directory to Minikube VM...${NC}"
-    minikube mount "$(pwd)/data:/data" &
-    MOUNT_PID=$!
+    # # Start background mount for data directory
+    # echo -e "${YELLOW}Mounting data directory to Minikube VM...${NC}"
+    # minikube mount "$(pwd)/data:/data" &
+    # MOUNT_PID=$!
     
-    # Wait a moment for mount to establish
-    sleep 5
+    # # Wait a moment for mount to establish
+    # sleep 5
     
-    # Verify mount is working
-    if minikube ssh "test -f /data/citation_nodes_full.csv"; then
-        echo -e "${GREEN}✅ Data files successfully mounted in Minikube${NC}"
-    else
-        echo -e "${RED}❌ Data mount failed - files not accessible${NC}"
-        echo -e "${YELLOW}💡 Retrying mount setup...${NC}"
-        sleep 3
-        if minikube ssh "test -f /data/citation_nodes_full.csv"; then
-            echo -e "${GREEN}✅ Data files now accessible${NC}"
-        else
-            echo -e "${RED}❌ Mount still failed. Check if data files exist in $(pwd)/data/${NC}"
-            ls -la "$(pwd)/data/"
-        fi
-    fi
+    # # Verify mount is working
+    # if minikube ssh "test -f /data/citation_nodes_full.csv"; then
+    #     echo -e "${GREEN}✅ Data files successfully mounted in Minikube${NC}"
+    # else
+    #     echo -e "${RED}❌ Data mount failed - files not accessible${NC}"
+    #     echo -e "${YELLOW}💡 Retrying mount setup...${NC}"
+    #     sleep 3
+    #     if minikube ssh "test -f /data/citation_nodes_full.csv"; then
+    #         echo -e "${GREEN}✅ Data files now accessible${NC}"
+    #     else
+    #         echo -e "${RED}❌ Mount still failed. Check if data files exist in $(pwd)/data/${NC}"
+    #         ls -la "$(pwd)/data/"
+    #     fi
+    # fi
     
-    echo -e "${YELLOW}📝 Note: Mount process running in background (PID: $MOUNT_PID)${NC}"
-    echo -e "${YELLOW}💡 To stop mount later: kill $MOUNT_PID${NC}"
+    # echo -e "${YELLOW}📝 Note: Mount process running in background (PID: $MOUNT_PID)${NC}"
+    # echo -e "${YELLOW}💡 To stop mount later: kill $MOUNT_PID${NC}"
 fi
 
 # Build all Docker images
@@ -93,18 +93,18 @@ for service in "${services[@]}"; do
     echo -e "${GREEN}✅ ${service} built successfully${NC}"
 done
 
-# Build all Docker images
-data_services=("arxiv-ingestion-service" "data-pipeline-service" "graph-builder-service")
+# # Build all Docker images for data services (updated for merged service)
+# data_services=("arxiv-ingestion-service" "data-pipeline-graph-builder-service")
 
-echo -e "${GREEN}📦 Building Docker images...${NC}"
-for service in "${data_services[@]}"; do
-    echo -e "${YELLOW}Building ${service}...${NC}"
-    cd "services/${service}"
+# echo -e "${GREEN}📦 Building data services Docker images...${NC}"
+# for service in "${data_services[@]}"; do
+#     echo -e "${YELLOW}Building ${service}...${NC}"
+#     cd "services/${service}"
 
-    docker build -t "${service}:dev" .
-    cd "../.."
-    echo -e "${GREEN}✅ ${service} built successfully${NC}"
-done
+#     docker build -t "${service}:dev" .
+#     cd "../.."
+#     echo -e "${GREEN}✅ ${service} built successfully${NC}"
+# done
 
 # Load images to kind cluster if using kind
 if kubectl config current-context | grep -q "kind"; then
@@ -142,6 +142,12 @@ fi
 
 echo -e "${GREEN}Query API: kubectl port-forward -n rag-system service/query-service 8000:8000${NC}"
 echo -e "${GREEN}Then access: http://localhost:8000/docs${NC}"
+
+echo -e "${GREEN}📊 Infrastructure URLs:${NC}"
+echo -e "${YELLOW}Kafka UI: kubectl port-forward -n rag-system service/kafka-ui 8080:8080${NC}"
+echo -e "${YELLOW}Then access: http://localhost:8080${NC}"
+echo -e "${YELLOW}Airflow: kubectl port-forward -n rag-system service/airflow-webserver 8081:8080${NC}"
+echo -e "${YELLOW}Then access: http://localhost:8081 (admin/admin123)${NC}"
 
 echo -e "${GREEN}📊 Monitoring URLs:${NC}"
 echo -e "${YELLOW}Grafana: kubectl port-forward -n rag-system service/grafana 3000:3000${NC}"

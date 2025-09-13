@@ -13,3 +13,5 @@ logs/
 .DS_Store
 
 *secrets.yaml
+
+backup/*

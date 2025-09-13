@@ -4,13 +4,16 @@ from typing import Dict, Any, List, Optional, Set
 import os
 import json
 import pandas as pd
+import pickle
 import time
 import zipfile
 from datetime import datetime, timedelta
 import logging
-import requests
+import threading
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response
+from kafka import KafkaProducer
+import asyncio
 
 # Kaggle API imports
 from kaggle.api.kaggle_api_extended import KaggleApi
@@ -19,6 +22,112 @@ from kaggle.api.kaggle_api_extended import KaggleApi
 RELEVANT_CATEGORIES = {"cs.CV", "cs.AI", "cs.LG", "cs.CL", "cs.NE", "stat.ML", "cs.IR"}
 
 app = FastAPI(title="ArXiv Ingestion Service", version="1.0.0")
+
+def init_kafka_producer():
+    """Initialize Kafka producer with retry logic"""
+    global kafka_producer
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            kafka_producer = KafkaProducer(
+                bootstrap_servers=[KAFKA_BOOTSTRAP_SERVERS],
+                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                key_serializer=lambda k: k.encode('utf-8') if k else None,
+                retries=5,
+                retry_backoff_ms=1000
+            )
+            logger.info(f"✅ Kafka producer initialized successfully")
+            return
+        except Exception as e:
+            logger.warning(f"❌ Kafka producer init attempt {attempt + 1} failed: {e}")
+            if attempt == max_retries - 1:
+                logger.error("🚨 Failed to initialize Kafka producer after all retries")
+                kafka_producer = None
+            else:
+                time.sleep(2 ** attempt)
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    init_kafka_producer()
+    # Migrate existing data if needed
+    migrate_legacy_files()
+
+def migrate_legacy_files():
+    """Migrate from old file structure to new clean structure"""
+    legacy_pkl = "/data/arxiv_data.pkl"
+    if os.path.exists(legacy_pkl) and not os.path.exists(MASTER_PAPERS_FILE):
+        logger.info("🔄 Migrating legacy arxiv_data.pkl to new structure")
+        try:
+            df = pd.read_pickle(legacy_pkl)
+            with file_lock:
+                df.to_pickle(MASTER_PAPERS_FILE)
+            logger.info(f"✅ Migrated {len(df)} papers to new master file")
+            ingestion_status["papers_count"] = len(df)
+        except Exception as e:
+            logger.error(f"❌ Failed to migrate legacy file: {e}")
+
+def load_master_papers() -> pd.DataFrame:
+    """Load master papers dataset with concurrent read support"""
+    with file_lock:
+        if os.path.exists(MASTER_PAPERS_FILE):
+            return pd.read_pickle(MASTER_PAPERS_FILE)
+        else:
+            return pd.DataFrame()
+
+def save_master_papers(df: pd.DataFrame):
+    """Save master papers dataset with write lock"""
+    with file_lock:
+        df.to_pickle(MASTER_PAPERS_FILE)
+        logger.info(f"💾 Saved {len(df)} papers to master file")
+
+def save_new_papers(df: pd.DataFrame):
+    """Save new papers from latest ingestion"""
+    with file_lock:
+        df.to_pickle(NEW_PAPERS_FILE)
+        logger.info(f"📄 Saved {len(df)} new papers to new papers file")
+
+def load_new_papers() -> pd.DataFrame:
+    """Load new papers from latest ingestion"""
+    with file_lock:
+        if os.path.exists(NEW_PAPERS_FILE):
+            return pd.read_pickle(NEW_PAPERS_FILE)
+        else:
+            return pd.DataFrame()
+
+async def publish_papers_to_kafka(papers: List[Dict]):
+    """Publish papers to Kafka for downstream processing"""
+    if not kafka_producer:
+        logger.warning("⚠️ Kafka producer not available, skipping paper publishing")
+        return
+    
+    try:
+        for paper in papers:
+            # Create Kafka message
+            message = {
+                'id': paper['id'],
+                'title': paper.get('title', ''),
+                'authors': paper.get('authors', ''),
+                'categories': paper.get('categories', ''),
+                'abstract': paper.get('abstract', ''),
+                'update_date': paper.get('update_date', ''),
+                'event_type': 'new_paper',
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Send to Kafka
+            future = kafka_producer.send(
+                KAFKA_TOPIC, 
+                key=paper['id'],
+                value=message
+            )
+            
+        # Ensure all messages are sent
+        kafka_producer.flush()
+        logger.info(f"📤 Published {len(papers)} papers to Kafka topic '{KAFKA_TOPIC}'")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to publish papers to Kafka: {e}")
 
 # Metrics
 KAGGLE_DOWNLOADS = Counter('arxiv_kaggle_downloads_total', 'Total Kaggle downloads')
@@ -31,6 +140,17 @@ DATA_FRESHNESS = Gauge('arxiv_data_freshness_hours', 'Hours since last update')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# File management - Only 2 files for clean architecture
+MASTER_PAPERS_FILE = "/data/arxiv_papers_master.pkl"  # All papers (master dataset)
+NEW_PAPERS_FILE = "/data/arxiv_papers_new.pkl"      # Papers added in latest ingestion
+
+# File locks for concurrent access
+file_lock = threading.Lock()
+
+# Kafka configuration
+KAFKA_BOOTSTRAP_SERVERS = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'kafka:9092')
+KAFKA_TOPIC = 'arxiv-papers'
+
 # Global state
 ingestion_status = {
     "status": "idle",  # idle, downloading, processing, completed, failed
@@ -39,6 +159,9 @@ ingestion_status = {
     "new_papers": 0,
     "message": ""
 }
+
+# Kafka producer (initialized on startup)
+kafka_producer = None
 
 class IngestionRequest(BaseModel):
     force_download: bool = False
@@ -53,10 +176,14 @@ class IngestionResponse(BaseModel):
 
 @app.get("/health")
 async def health_check():
+    kafka_status = "connected" if kafka_producer else "disconnected"
     return {
         "status": "healthy",
         "service": "arxiv-ingestion-service",
-        "ingestion_status": ingestion_status["status"]
+        "ingestion_status": ingestion_status["status"],
+        "kafka_status": kafka_status,
+        "master_papers_count": len(load_master_papers()),
+        "new_papers_count": len(load_new_papers())
     }
 
 @app.get("/metrics")
@@ -148,32 +275,11 @@ def process_arxiv_metadata(metadata_file: str, filter_years: int = 5) -> Dict[st
     """Process arXiv metadata and extract new papers"""
     logger.info(f"Processing metadata file: {metadata_file}")
     
-    # Load existing processed data from individual PVC
-    processed_file = "/data/processed_papers.json"
-    arxiv_data_file = "/data/arxiv_data.pkl"
-    existing_papers = set()
+    # Load existing papers from master file (clean architecture)
+    existing_df = load_master_papers()
+    existing_papers = set(existing_df['id'].astype(str)) if not existing_df.empty else set()
     
-    # First try lightweight processed_file for quick ID checks
-    if os.path.exists(processed_file):
-        try:
-            with open(processed_file, 'r') as f:
-                existing_data = json.load(f)
-                existing_papers = set(existing_data.get('paper_ids', []))
-                logger.info(f"Found {len(existing_papers)} existing papers in processed_papers.json")
-        except Exception as e:
-            logger.warning(f"Could not load processed_papers.json: {e}")
-    
-    # Fallback to arxiv_data.pkl if processed_file doesn't exist
-    if not existing_papers and os.path.exists(arxiv_data_file):
-        try:
-            df = pd.read_pickle(arxiv_data_file)
-            existing_papers = set(df['id'].astype(str))
-            logger.info(f"Fallback: Found {len(existing_papers)} existing papers in arxiv_data.pkl")
-        except Exception as e:
-            logger.error(f"Error loading existing arxiv_data.pkl: {e}")
-    
-    if not existing_papers:
-        logger.info("No existing papers found, processing all papers")
+    logger.info(f"📊 Found {len(existing_papers)} existing papers in master file")
     
     # Calculate cutoff date
     cutoff_date = datetime.now() - timedelta(days=filter_years * 365)
@@ -229,37 +335,26 @@ def process_arxiv_metadata(metadata_file: str, filter_years: int = 5) -> Dict[st
         
         logger.info(f"Processing complete. Total papers: {total_papers}, New papers: {len(new_papers)}")
         
-        # Update processed papers list for quick future lookups
-        all_paper_ids = list(existing_papers) + [p['id'] for p in new_papers]
-        processed_data = {
-            'last_update': datetime.now().isoformat(),
-            'total_papers': len(all_paper_ids),
-            'new_papers_found': len(new_papers),
-            'paper_ids': all_paper_ids
-        }
+        # Save results using clean file architecture (only 2 files!)
+        all_papers = list(existing_df.to_dict('records')) if not existing_df.empty else []
+        all_papers.extend(new_papers)
         
-        # Save updated processed_file for next incremental run
-        with open(processed_file, 'w') as f:
-            json.dump(processed_data, f)
+        # Update master file with all papers
+        master_df = pd.DataFrame(all_papers)
+        save_master_papers(master_df)
         
-        logger.info(f"Ingestion summary: {processed_data}")
-        
-        # Save new papers if any
+        # Save only new papers to separate file
         if new_papers:
-            new_papers_file = f"/data/new_papers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(new_papers_file, 'w') as f:
-                json.dump(new_papers, f, indent=2)
-            logger.info(f"Saved {len(new_papers)} new papers to {new_papers_file}")
-            
-            # Note: New papers will be sent via Kafka by the ingestion process, not direct API calls
+            new_papers_df = pd.DataFrame(new_papers)
+            save_new_papers(new_papers_df)
+            logger.info(f"📝 Saved {len(new_papers)} new papers to new papers file")
         
         NEW_PAPERS_FOUND.set(len(new_papers))
         
         return {
             'total_papers': total_papers,
             'new_papers': len(new_papers),
-            'new_papers_file': new_papers_file if new_papers else None,
-            'processed_file': processed_file
+            'master_papers_count': len(all_papers)
         }
         
     except Exception as e:
@@ -292,15 +387,22 @@ async def run_ingestion(force_download: bool = False, filter_years: int = 5):
         # Process metadata
         result = process_arxiv_metadata(metadata_file, filter_years)
         
+        # Publish new papers to Kafka for downstream processing
+        if result['new_papers'] > 0:
+            ingestion_status["message"] = "Publishing new papers to Kafka..."
+            new_papers_df = load_new_papers()
+            new_papers_list = new_papers_df.to_dict('records')
+            await publish_papers_to_kafka(new_papers_list)
+        
         ingestion_status.update({
             "status": "completed",
-            "message": f"Ingestion completed successfully. Found {result['new_papers']} new papers.",
+            "message": f"Ingestion and Kafka publishing completed successfully. Found {result['new_papers']} new papers.",
             "papers_count": result['total_papers'],
             "new_papers": result['new_papers'],
             "last_update": datetime.now().isoformat()
         })
         
-        logger.info("Ingestion completed successfully")
+        logger.info("🎉 Ingestion completed successfully")
         
     except Exception as e:
         logger.error(f"Ingestion failed: {e}")
@@ -338,198 +440,67 @@ async def start_ingestion(
         new_papers=0
     )
 
-@app.get("/data/new-papers")
-async def get_new_papers():
-    """Get ALL recently discovered new papers (no limit for full fidelity)"""
+
+# Clean API endpoints - only what's needed for the new architecture
+
+@app.get("/papers")
+async def get_all_papers(limit: int = 1000, offset: int = 0):
+    """Get all papers from master dataset"""
     try:
-        # Find the most recent new papers file
-        data_dir = "/data"
-        new_papers_files = [f for f in os.listdir(data_dir) if f.startswith("new_papers_")]
+        master_df = load_master_papers()
         
-        if not new_papers_files:
-            return {"papers": [], "total_count": 0, "message": "No new papers found"}
-        
-        # Get the most recent file
-        latest_file = max(new_papers_files, key=lambda x: os.path.getctime(os.path.join(data_dir, x)))
-        file_path = os.path.join(data_dir, latest_file)
-        
-        with open(file_path, 'r') as f:
-            papers = json.load(f)
-        
-        # Return ALL papers for full fidelity
-        logger.info(f"Returning {len(papers)} new papers from {latest_file}")
-        return {
-            "papers": papers,
-            "total_count": len(papers),
-            "file": latest_file
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error retrieving papers: {str(e)}")
-
-# Batch processing models
-class PapersBatch(BaseModel):
-    papers: List[Dict]
-    source_service: str = "arxiv-ingestion-service"
-
-class PaperIdsBatch(BaseModel):
-    paper_ids: List[str]
-
-# Batch APIs for handling millions of paper IDs efficiently
-@app.get("/batch/arxiv-papers")
-async def get_arxiv_papers_batch(limit: int = 1000, offset: int = 0):
-    """Get batch of processed arXiv papers for other services"""
-    try:
-        arxiv_data_file = "/data/arxiv_data.pkl"
-        
-        if not os.path.exists(arxiv_data_file):
+        if master_df.empty:
             return {
                 "papers": [],
                 "total_count": 0,
                 "batch_size": 0,
                 "offset": offset,
                 "has_more": False,
-                "message": "No arXiv data available yet"
+                "message": "No papers available yet"
             }
-        
-        # Load data
-        df = pd.read_pickle(arxiv_data_file)
         
         # Apply pagination
         start_idx = offset
-        end_idx = min(offset + limit, len(df))
-        batch_df = df.iloc[start_idx:end_idx]
-        
-        # Convert to dict format
+        end_idx = min(offset + limit, len(master_df))
+        batch_df = master_df.iloc[start_idx:end_idx]
         papers = batch_df.to_dict('records')
         
         return {
             "papers": papers,
-            "total_count": len(df),
+            "total_count": len(master_df),
             "batch_size": len(papers),
             "offset": offset,
-            "has_more": end_idx < len(df)
+            "has_more": end_idx < len(master_df)
         }
         
     except Exception as e:
-        logger.error(f"Error retrieving arXiv papers batch: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve papers batch: {str(e)}")
+        logger.error(f"Error retrieving papers: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve papers: {str(e)}")
 
-@app.post("/batch/papers/transfer")
-async def receive_papers_batch(batch: PapersBatch):
-    """Receive batch of papers from other services (max 1000 papers)"""
-    if len(batch.papers) > 1000:
-        raise HTTPException(status_code=400, detail="Batch too large. Maximum 1000 papers per batch.")
-    
+@app.get("/papers/new") 
+async def get_new_papers_from_latest_ingestion():
+    """Get papers from latest ingestion (for debugging/monitoring)"""
     try:
-        # Store papers in a separate file for processing
-        batch_file = f"/data/received_papers_batch_{int(time.time() * 1000)}.json"
+        new_df = load_new_papers()
         
-        batch_data = {
-            "papers": batch.papers,
-            "source_service": batch.source_service,
-            "received_at": datetime.now().isoformat(),
-            "count": len(batch.papers)
-        }
+        if new_df.empty:
+            return {
+                "papers": [],
+                "count": 0,
+                "message": "No new papers from latest ingestion"
+            }
         
-        with open(batch_file, 'w') as f:
-            json.dump(batch_data, f, indent=2)
-        
-        logger.info(f"Received batch of {len(batch.papers)} papers from {batch.source_service}")
+        papers = new_df.to_dict('records')
         
         return {
-            "status": "received",
-            "papers_count": len(batch.papers),
-            "source_service": batch.source_service,
-            "batch_file": batch_file,
-            "message": f"Successfully stored {len(batch.papers)} papers"
+            "papers": papers,
+            "count": len(papers),
+            "message": f"Found {len(papers)} new papers from latest ingestion"
         }
         
     except Exception as e:
-        logger.error(f"Error receiving papers batch: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to store papers batch: {str(e)}")
-
-@app.get("/batch/paper-ids")
-async def get_paper_ids_batch(limit: int = 1000, offset: int = 0):
-    """Get batch of paper IDs for efficient communication with other services"""
-    try:
-        # First try from processed_papers.json (faster)
-        processed_file = "/data/processed_papers.json"
-        if os.path.exists(processed_file):
-            with open(processed_file, 'r') as f:
-                processed_data = json.load(f)
-                paper_ids = processed_data.get('paper_ids', [])
-        else:
-            # Fallback to arxiv_data.pkl
-            arxiv_data_file = "/data/arxiv_data.pkl"
-            if not os.path.exists(arxiv_data_file):
-                return {
-                    "paper_ids": [],
-                    "total_count": 0,
-                    "batch_size": 0,
-                    "offset": offset,
-                    "has_more": False,
-                    "message": "No paper data available yet"
-                }
-            
-            df = pd.read_pickle(arxiv_data_file)
-            paper_ids = df['id'].astype(str).tolist()
-        
-        # Apply pagination
-        start_idx = offset
-        end_idx = min(offset + limit, len(paper_ids))
-        batch = paper_ids[start_idx:end_idx]
-        
-        return {
-            "paper_ids": batch,
-            "total_count": len(paper_ids),
-            "batch_size": len(batch),
-            "offset": offset,
-            "has_more": end_idx < len(paper_ids)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error retrieving paper IDs batch: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve paper IDs: {str(e)}")
-
-@app.post("/batch/request-processing")
-async def request_processing_batch(request: PaperIdsBatch):
-    """Request processing for a batch of paper IDs from data pipeline service"""
-    if len(request.paper_ids) > 1000:
-        raise HTTPException(status_code=400, detail="Batch too large. Maximum 1000 paper IDs per request.")
-    
-    try:
-        # Call data pipeline service to process these papers
-        data_pipeline_url = "http://data-pipeline-service:8005"
-        
-        payload = {
-            "papers": [{"id": paper_id} for paper_id in request.paper_ids]
-        }
-        
-        response = requests.post(
-            f"{data_pipeline_url}/events/new-papers",
-            json=payload,
-            timeout=300
-        )
-        
-        if response.status_code != 200:
-            raise HTTPException(status_code=response.status_code, detail=f"Data pipeline service error: {response.text}")
-        
-        result = response.json()
-        logger.info(f"Requested processing for {len(request.paper_ids)} paper IDs")
-        
-        return {
-            "status": "requested",
-            "paper_ids_count": len(request.paper_ids),
-            "data_pipeline_response": result,
-            "message": f"Successfully requested processing for {len(request.paper_ids)} papers"
-        }
-        
-    except requests.exceptions.Timeout:
-        raise HTTPException(status_code=504, detail="Request to data pipeline service timed out")
-    except Exception as e:
-        logger.error(f"Error requesting processing batch: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to request processing: {str(e)}")
+        logger.error(f"Error retrieving new papers: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve new papers: {str(e)}")
 
 @app.get("/data/files")
 async def get_data_files():

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pipeline-graph-builder-pvc
+  namespace: rag-system
+  labels:
+    app: data-pipeline-graph-builder-service
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 30Gi  # Combined storage for references_complete.jsonl (9.9GB) + working files + graph outputs
+  storageClassName: standard

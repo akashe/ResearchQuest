@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-pipeline-graph-builder-service
+  namespace: rag-system
+  labels:
+    app: data-pipeline-graph-builder-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-pipeline-graph-builder-service
+  template:
+    metadata:
+      labels:
+        app: data-pipeline-graph-builder-service
+    spec:
+      containers:
+      - name: data-pipeline-graph-builder-service
+        image: data-pipeline-graph-builder-service:dev
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8005
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka:9092"
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"
+        - name: NEO4J_SERVICE_URL
+          value: "http://neo4j-service:8003"
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        - name: build-graph-volume
+          mountPath: /app/build_graph
+          readOnly: true
+        resources:
+          requests:
+            memory: "4Gi"
+            cpu: "1000m"
+          limits:
+            memory: "16Gi"  # Increased for processing large datasets + graph building
+            cpu: "8000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8005
+          initialDelaySeconds: 300
+          periodSeconds: 600
+          timeoutSeconds: 500
+          failureThreshold: 5
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8005
+          initialDelaySeconds: 500
+          periodSeconds: 600
+          timeoutSeconds: 500
+          failureThreshold: 5
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: data-pipeline-graph-builder-pvc
+      - name: build-graph-volume
+        hostPath:
+          path: /Users/akashkumar/projects/ResearchQuest/build_graph
+          type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-pipeline-graph-builder-service
+  namespace: rag-system
+  labels:
+    app: data-pipeline-graph-builder-service
+spec:
+  selector:
+    app: data-pipeline-graph-builder-service
+  ports:
+  - port: 8005
+    targetPort: 8005
+    name: http
+  type: ClusterIP

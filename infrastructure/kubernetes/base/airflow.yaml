@@ -237,9 +237,9 @@ data:
                             'event_type': 'new_paper'
                         })
                     
-                    # Publish to data pipeline service (now with real Semantic Scholar integration)
+                    # Publish to merged data pipeline graph builder service
                     response = requests.post(
-                        'http://data-pipeline-service:8005/events/new-papers',
+                        'http://data-pipeline-graph-builder-service:8005/events/new-papers',
                         json=kafka_events,
                         timeout=1800  # 30 minutes for Semantic Scholar processing
                     )
@@ -264,7 +264,7 @@ data:
         
         while elapsed < max_wait:
             try:
-                response = requests.get('http://data-pipeline-service:8005/status', timeout=10)
+                response = requests.get('http://data-pipeline-graph-builder-service:8005/status', timeout=10)
                 if response.status_code == 200:
                     status = response.json()
                     if status.get('status') == 'idle':  # Pipeline completed
@@ -282,25 +282,59 @@ data:
         
         raise Exception("Pipeline processing timed out")
 
-    def trigger_graph_build():
-        """Trigger graph builder service to run C++ and update Neo4j"""
+    def trigger_step1_process_papers():
+        """Trigger step 1: Process papers through semantic enrichment"""
         try:
             response = requests.post(
-                'http://graph-builder-service:8006/build-graph',
+                'http://data-pipeline-graph-builder-service:8005/airflow/step1-process-papers',
+                json={'timeout_minutes': 60},
+                timeout=3600  # 1 hour timeout
+            )
+            
+            if response.status_code == 200:
+                return "Step 1 - Process papers triggered successfully"
+            else:
+                raise Exception(f"Step 1 trigger failed: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            raise Exception(f"Step 1 trigger failed: {str(e)}")
+
+    def trigger_step2_prune_data():
+        """Trigger step 2: Prune and prepare data for graph building"""
+        try:
+            response = requests.post(
+                'http://data-pipeline-graph-builder-service:8005/airflow/step2-prune-data',
+                json={'timeout_minutes': 30},
+                timeout=1800  # 30 minutes timeout
+            )
+            
+            if response.status_code == 200:
+                return "Step 2 - Prune data triggered successfully"
+            else:
+                raise Exception(f"Step 2 trigger failed: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            raise Exception(f"Step 2 trigger failed: {str(e)}")
+
+    def trigger_step3_build_graph():
+        """Trigger step 3: Build graph using C++ and load into Neo4j"""
+        try:
+            response = requests.post(
+                'http://data-pipeline-graph-builder-service:8005/airflow/step3-build-graph',
                 json={'timeout_minutes': 120},
                 timeout=7200  # 2 hours timeout
             )
             
             if response.status_code == 200:
-                return "Graph build triggered successfully"
+                return "Step 3 - Build graph triggered successfully"
             else:
-                raise Exception(f"Graph build trigger failed: {response.status_code} - {response.text}")
+                raise Exception(f"Step 3 trigger failed: {response.status_code} - {response.text}")
                 
         except Exception as e:
-            raise Exception(f"Graph build trigger failed: {str(e)}")
+            raise Exception(f"Step 3 trigger failed: {str(e)}")
 
-    def check_graph_build_completion():
-        """Check if graph build completed successfully"""
+    def check_processing_completion():
+        """Check if all processing steps completed successfully"""
         import time
         max_wait = 7200  # 2 hours max wait
         wait_interval = 120  # Check every 2 minutes
@@ -308,27 +342,27 @@ data:
         
         while elapsed < max_wait:
             try:
-                response = requests.get('http://graph-builder-service:8006/status', timeout=10)
+                response = requests.get('http://data-pipeline-graph-builder-service:8005/status', timeout=10)
                 if response.status_code == 200:
                     status = response.json()
-                    build_status = status.get('status')
+                    processing_status = status.get('status')
                     
-                    if build_status == 'completed':
-                        return f"Graph build completed: {status.get('message', 'Success')}"
-                    elif build_status == 'failed':
-                        raise Exception(f"Graph build failed: {status.get('message', 'Unknown error')}")
-                    elif build_status in ['idle', 'building', 'running']:
-                        print(f"Graph build status: {build_status} - {status.get('message', '')}")
+                    if processing_status == 'completed':
+                        return f"All processing completed: {status.get('message', 'Success')}"
+                    elif processing_status == 'failed':
+                        raise Exception(f"Processing failed: {status.get('message', 'Unknown error')}")
+                    elif processing_status in ['idle', 'processing', 'running']:
+                        print(f"Processing status: {processing_status} - {status.get('message', '')}")
                 
                 time.sleep(wait_interval)
                 elapsed += wait_interval
                 
             except Exception as e:
-                print(f"Error checking graph build status: {e}")
+                print(f"Error checking processing status: {e}")
                 time.sleep(wait_interval)
                 elapsed += wait_interval
         
-        raise Exception("Graph build timed out")
+        raise Exception("Processing timed out")
 
     # Define tasks
     health_check = PythonOperator(
@@ -367,20 +401,32 @@ data:
         dag=dag,
     )
 
-    trigger_graph = PythonOperator(
-        task_id='trigger_graph_build',
-        python_callable=trigger_graph_build,
+    step1_process = PythonOperator(
+        task_id='step1_process_papers',
+        python_callable=trigger_step1_process_papers,
         dag=dag,
     )
 
-    check_graph = PythonOperator(
-        task_id='check_graph_build_completion',
-        python_callable=check_graph_build_completion,
+    step2_prune = PythonOperator(
+        task_id='step2_prune_data',
+        python_callable=trigger_step2_prune_data,
         dag=dag,
     )
 
-    # Define task dependencies - Complete pipeline flow
-    health_check >> start_ingestion >> wait_for_completion >> check_completion >> publish_to_pipeline >> wait_pipeline >> trigger_graph >> check_graph
+    step3_build = PythonOperator(
+        task_id='step3_build_graph',
+        python_callable=trigger_step3_build_graph,
+        dag=dag,
+    )
+
+    check_completion_final = PythonOperator(
+        task_id='check_final_completion',
+        python_callable=check_processing_completion,
+        dag=dag,
+    )
+
+    # Define task dependencies - Complete pipeline flow with new merged service architecture
+    health_check >> start_ingestion >> wait_for_completion >> check_completion >> publish_to_pipeline >> wait_pipeline >> step1_process >> step2_prune >> step3_build >> check_completion_final
 
   graph_maintenance_pipeline.py: |
     from datetime import datetime, timedelta

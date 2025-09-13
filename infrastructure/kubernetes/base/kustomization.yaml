@@ -17,11 +17,9 @@ resources:
 - prometheus.yaml
 - grafana.yaml
 - kaggle-secret.yaml
-- arxiv-ingestion-service/deployment.yaml
-- graph-builder-service/deployment.yaml
-- graph-builder-service/pvc.yaml
-- data-pipeline-service/deployment.yaml
-- data-pipeline-service/pvc.yaml
+# - arxiv-ingestion-service/deployment.yaml
+# - data-pipeline-graph-builder-service/deployment.yaml
+# - data-pipeline-graph-builder-service/pvc.yaml
 - kafka.yaml
 - redis.yaml
 - airflow.yaml
