@@ -84,3 +84,6 @@ data:
     - job_name: 'data-pipeline-service'
       static_configs:
       - targets: ['data-pipeline-service:8005']
+    - job_name: 'graph-builder-service'
+      static_configs:
+      - targets: ['graph-builder-service:8006']

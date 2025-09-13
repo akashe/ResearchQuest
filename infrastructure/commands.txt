@@ -18,3 +18,11 @@ docker build -t frontend-service:dev services/frontend-service/
 
 # Exceute a specific command
 kubectl exec -n rag-system deployment/generation-service -- cat logs/llm_usage.log
+
+# check PVCs
+kubectl get pvc -n rag-system
+
+# Complete Minikube reset (fastest way to break the cycle)
+minikube stop
+minikube delete
+minikube start --memory=8192 --cpus=4

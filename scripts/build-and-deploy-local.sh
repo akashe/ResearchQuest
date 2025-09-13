@@ -94,7 +94,7 @@ for service in "${services[@]}"; do
 done
 
 # Build all Docker images
-data_services=("arxiv-ingestion-service")
+data_services=("arxiv-ingestion-service" "data-pipeline-service" "graph-builder-service")
 
 echo -e "${GREEN}📦 Building Docker images...${NC}"
 for service in "${data_services[@]}"; do

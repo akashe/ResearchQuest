@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 import os
 import json
 import pandas as pd
@@ -13,6 +13,9 @@ from fastapi.responses import Response
 
 # Kaggle API imports
 from kaggle.api.kaggle_api_extended import KaggleApi
+
+# ML-related categories for filtering (from build_graph/get_arxiv_metadata_from_kaggle.py)
+RELEVANT_CATEGORIES = {"cs.CV", "cs.AI", "cs.LG", "cs.CL", "cs.NE", "stat.ML", "cs.IR"}
 
 app = FastAPI(title="ArXiv Ingestion Service", version="1.0.0")
 
@@ -120,7 +123,7 @@ def download_arxiv_metadata(api: KaggleApi, force_download: bool = False) -> str
                 
                 for i, member in enumerate(members):
                     zip_ref.extract(member, dataset_path)
-                    # Yield control every 1000 files to keep health checks responsive
+                    # Yield control every 10000 files to keep health checks responsive
                     if i % 10000 == 0:
                         logger.info(f"Extracted {i}/{total_files} files ({i/total_files*100:.1f}%)")
                         time.sleep(0.1)  # Brief pause to allow health checks
@@ -144,18 +147,32 @@ def process_arxiv_metadata(metadata_file: str, filter_years: int = 5) -> Dict[st
     """Process arXiv metadata and extract new papers"""
     logger.info(f"Processing metadata file: {metadata_file}")
     
-    # Load existing processed data if available
-    processed_file = "/data/processed_papers.json"
+    # Load existing processed data from shared volume
+    processed_file = "/shared-data/processed_papers.json"
+    arxiv_data_file = "/shared-data/arxiv_data.pkl"
     existing_papers = set()
     
+    # First try lightweight processed_file for quick ID checks
     if os.path.exists(processed_file):
         try:
             with open(processed_file, 'r') as f:
                 existing_data = json.load(f)
                 existing_papers = set(existing_data.get('paper_ids', []))
-                logger.info(f"Found {len(existing_papers)} existing papers")
+                logger.info(f"Found {len(existing_papers)} existing papers in processed_papers.json")
         except Exception as e:
-            logger.warning(f"Could not load existing papers: {e}")
+            logger.warning(f"Could not load processed_papers.json: {e}")
+    
+    # Fallback to arxiv_data.pkl if processed_file doesn't exist
+    if not existing_papers and os.path.exists(arxiv_data_file):
+        try:
+            df = pd.read_pickle(arxiv_data_file)
+            existing_papers = set(df['id'].astype(str))
+            logger.info(f"Fallback: Found {len(existing_papers)} existing papers in arxiv_data.pkl")
+        except Exception as e:
+            logger.error(f"Error loading existing arxiv_data.pkl: {e}")
+    
+    if not existing_papers:
+        logger.info("No existing papers found, processing all papers")
     
     # Calculate cutoff date
     cutoff_date = datetime.now() - timedelta(days=filter_years * 365)
@@ -179,9 +196,14 @@ def process_arxiv_metadata(metadata_file: str, filter_years: int = 5) -> Dict[st
                     if update_date < cutoff_date:
                         continue
                     
+                    # Filter by ML-related categories (from build_graph logic)
+                    categories = paper.get('categories', '')
+                    if not any(category in RELEVANT_CATEGORIES for category in categories.split()):
+                        continue
+                    
                     paper_id = paper['id']
                     
-                    # Check if this is a new paper
+                    # Check if this is a new paper (avoid reprocessing)
                     if paper_id not in existing_papers:
                         new_papers.append({
                             'id': paper_id,
@@ -206,16 +228,20 @@ def process_arxiv_metadata(metadata_file: str, filter_years: int = 5) -> Dict[st
         
         logger.info(f"Processing complete. Total papers: {total_papers}, New papers: {len(new_papers)}")
         
-        # Update processed papers list
+        # Update processed papers list for quick future lookups
         all_paper_ids = list(existing_papers) + [p['id'] for p in new_papers]
         processed_data = {
-            'last_update': datetime.utcnow().isoformat(),
+            'last_update': datetime.now().isoformat(),
             'total_papers': len(all_paper_ids),
+            'new_papers_found': len(new_papers),
             'paper_ids': all_paper_ids
         }
         
+        # Save updated processed_file for next incremental run
         with open(processed_file, 'w') as f:
             json.dump(processed_data, f)
+        
+        logger.info(f"Ingestion summary: {processed_data}")
         
         # Save new papers if any
         if new_papers:
@@ -268,7 +294,7 @@ async def run_ingestion(force_download: bool = False, filter_years: int = 5):
             "message": f"Ingestion completed successfully. Found {result['new_papers']} new papers.",
             "papers_count": result['total_papers'],
             "new_papers": result['new_papers'],
-            "last_update": datetime.utcnow().isoformat()
+            "last_update": datetime.now().isoformat()
         })
         
         logger.info("Ingestion completed successfully")
@@ -278,7 +304,7 @@ async def run_ingestion(force_download: bool = False, filter_years: int = 5):
         ingestion_status.update({
             "status": "failed",
             "message": f"Ingestion failed: {str(e)}",
-            "last_update": datetime.utcnow().isoformat()
+            "last_update": datetime.now().isoformat()
         })
 
 @app.post("/ingest", response_model=IngestionResponse)
@@ -310,15 +336,15 @@ async def start_ingestion(
     )
 
 @app.get("/data/new-papers")
-async def get_new_papers(limit: int = 100):
-    """Get recently discovered new papers"""
+async def get_new_papers():
+    """Get ALL recently discovered new papers (no limit for full fidelity)"""
     try:
         # Find the most recent new papers file
         data_dir = "/data"
         new_papers_files = [f for f in os.listdir(data_dir) if f.startswith("new_papers_")]
         
         if not new_papers_files:
-            return {"papers": [], "message": "No new papers found"}
+            return {"papers": [], "total_count": 0, "message": "No new papers found"}
         
         # Get the most recent file
         latest_file = max(new_papers_files, key=lambda x: os.path.getctime(os.path.join(data_dir, x)))
@@ -327,9 +353,10 @@ async def get_new_papers(limit: int = 100):
         with open(file_path, 'r') as f:
             papers = json.load(f)
         
-        # Return limited results
+        # Return ALL papers for full fidelity
+        logger.info(f"Returning {len(papers)} new papers from {latest_file}")
         return {
-            "papers": papers[:limit],
+            "papers": papers,
             "total_count": len(papers),
             "file": latest_file
         }

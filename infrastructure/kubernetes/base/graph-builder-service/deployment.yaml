@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: data-pipeline-service
+  name: graph-builder-service
   namespace: rag-system
   labels:
-    app: data-pipeline-service
+    app: graph-builder-service
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: data-pipeline-service
+      app: graph-builder-service
   template:
     metadata:
       labels:
-        app: data-pipeline-service
+        app: graph-builder-service
     spec:
       # Init container to fix shared-data permissions
       initContainers:
@@ -33,42 +33,39 @@ spec:
         securityContext:
           runAsUser: 0
       containers:
-      - name: data-pipeline-service
-        image: data-pipeline-service:dev
+      - name: graph-builder-service
+        image: graph-builder-service:dev
         imagePullPolicy: Never
         ports:
-        - containerPort: 8005
+        - containerPort: 8006
         env:
-        - name: KAFKA_BOOTSTRAP_SERVERS
-          value: "kafka:9092"
-        - name: REDIS_HOST
-          value: "redis"
-        - name: REDIS_PORT
-          value: "6379"
+        - name: NEO4J_SERVICE_URL
+          value: "http://neo4j-service:8003"
         volumeMounts:
         - name: shared-data
           mountPath: /shared-data
         resources:
           requests:
-            memory: "1Gi"
-            cpu: "500m"
-          limits:
             memory: "2Gi"
             cpu: "1000m"
+          limits:
+            memory: "8Gi"
+            cpu: "4000m"
         livenessProbe:
           httpGet:
             path: /health
-            port: 8005
-          initialDelaySeconds: 60
-          periodSeconds: 30
-          timeoutSeconds: 10
+            port: 8006
+          initialDelaySeconds: 120
+          periodSeconds: 60
+          timeoutSeconds: 30
+          failureThreshold: 5
         readinessProbe:
           httpGet:
             path: /health
-            port: 8005
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
+            port: 8006
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 15
       volumes:
       - name: shared-data
         persistentVolumeClaim:
@@ -77,15 +74,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: data-pipeline-service
+  name: graph-builder-service
   namespace: rag-system
   labels:
-    app: data-pipeline-service
+    app: graph-builder-service
 spec:
   selector:
-    app: data-pipeline-service
+    app: graph-builder-service
   ports:
-  - port: 8005
-    targetPort: 8005
+  - port: 8006
+    targetPort: 8006
     name: http
   type: ClusterIP

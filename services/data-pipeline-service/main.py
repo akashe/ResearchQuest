@@ -1,23 +1,43 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 import json
 import os
 import time
 import logging
-from datetime import datetime
+import random
+import pandas as pd
+from datetime import datetime, timedelta
 from kafka import KafkaProducer, KafkaConsumer
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response
 import redis
 import asyncio
+import requests
 from concurrent.futures import ThreadPoolExecutor
 
 app = FastAPI(title="Data Pipeline Service", version="1.0.0")
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('/shared-data/data-pipeline.log')
+    ]
+)
 logger = logging.getLogger(__name__)
+
+# Semantic Scholar API Configuration
+SEMANTIC_SCHOLAR_API_URL = "https://api.semanticscholar.org/graph/v1"
+SEMANTIC_SCHOLAR_FIELDS = "url,year,citationCount,tldr"
+REFERENCES_FIELDS = "paperId,title,contexts,year,citationCount,abstract"
+
+# Shared data paths
+SHARED_DATA_PATH = "/shared-data"
+REFERENCES_FILE = f"{SHARED_DATA_PATH}/references_complete.jsonl"
+ARXIV_DATA_FILE = f"{SHARED_DATA_PATH}/arxiv_data.pkl"
 
 # Metrics
 KAFKA_MESSAGES_PRODUCED = Counter('pipeline_kafka_messages_produced_total', 'Total messages produced to Kafka', ['topic'])
@@ -215,18 +235,186 @@ async def consume_new_papers():
         PIPELINE_ERRORS.labels(stage='consume', error_type='kafka_error').inc()
 
 async def enrich_paper_semantics(paper_data: Dict) -> SemanticEnrichment:
-    """Simulate semantic scholar enrichment (replace with actual API calls)"""
-    # Simulate processing time
-    await asyncio.sleep(0.1)
+    """Enrich paper with Semantic Scholar data using real API calls"""
+    paper_id = paper_data['id']
+    arxiv_id = f"ARXIV:{paper_id}"
     
-    # Mock semantic scholar data
-    return SemanticEnrichment(
-        paper_id=paper_data['id'],
-        semantic_scholar_id=f"ss_{paper_data['id']}",
-        references=[f"ref_{i}" for i in range(5)],  # Mock references
-        citations=[f"cite_{i}" for i in range(3)],   # Mock citations
-        influence_score=0.75
-    )
+    try:
+        # Step 1: Get Semantic Scholar paper ID (from get_semantic_paper_ids_for_arxiv_papers.py logic)
+        semantic_scholar_id = await get_semantic_scholar_id(arxiv_id)
+        
+        if not semantic_scholar_id:
+            logger.warning(f"No Semantic Scholar ID found for arXiv paper: {paper_id}")
+            PIPELINE_ERRORS.labels(stage='semantic_enrichment', error_type='missing_semantic_id').inc()
+            return SemanticEnrichment(paper_id=paper_id)
+        
+        # Step 2: Check if we already processed references for this paper
+        processed_semantic_ids = await load_processed_semantic_ids()
+        
+        references = []
+        if semantic_scholar_id not in processed_semantic_ids:
+            # Step 3: Fetch references (from get_citation_details.py logic)
+            references = await fetch_paper_references(semantic_scholar_id)
+            
+            # Step 4: Append new references to references_complete.jsonl
+            if references:
+                await append_references_to_file(references, paper_id)
+        else:
+            logger.info(f"References already processed for semantic ID: {semantic_scholar_id}")
+        
+        return SemanticEnrichment(
+            paper_id=paper_id,
+            semantic_scholar_id=semantic_scholar_id,
+            references=references,
+            influence_score=len(references) / 100.0  # Simple influence score based on reference count
+        )
+        
+    except Exception as e:
+        logger.error(f"Error enriching paper {paper_id}: {e}")
+        PIPELINE_ERRORS.labels(stage='semantic_enrichment', error_type='api_error').inc()
+        return SemanticEnrichment(paper_id=paper_id)
+
+async def get_semantic_scholar_id(arxiv_id: str, max_retries: int = 5) -> Optional[str]:
+    """Get Semantic Scholar paper ID for arXiv paper with exponential backoff"""
+    url = f"{SEMANTIC_SCHOLAR_API_URL}/paper/batch/"
+    params = {'fields': SEMANTIC_SCHOLAR_FIELDS}
+    json_data = {"ids": [arxiv_id]}
+    
+    backoff_base = 2
+    
+    for attempt in range(max_retries):
+        try:
+            # Add jitter to prevent thundering herd
+            await asyncio.sleep(random.uniform(0.1, 0.5))
+            
+            response = requests.post(url, params=params, json=json_data, timeout=30)
+            
+            if response.status_code == 200:
+                results = response.json()
+                if results and len(results) > 0 and results[0] is not None:
+                    paper_info = results[0]
+                    return paper_info.get('paperId')
+            
+            elif response.status_code == 429:  # Rate limited
+                wait_time = backoff_base ** attempt + random.uniform(0, 1)
+                logger.warning(f"Rate limited, waiting {wait_time:.2f}s (attempt {attempt + 1})")
+                await asyncio.sleep(wait_time)
+                continue
+            
+            else:
+                logger.warning(f"Unexpected status code {response.status_code} for {arxiv_id}")
+                
+        except requests.exceptions.Timeout:
+            wait_time = backoff_base ** attempt
+            logger.warning(f"Timeout for {arxiv_id}, retrying in {wait_time}s (attempt {attempt + 1})")
+            await asyncio.sleep(wait_time)
+            continue
+            
+        except Exception as e:
+            logger.error(f"Error fetching Semantic Scholar ID for {arxiv_id}: {e}")
+            await asyncio.sleep(backoff_base ** attempt)
+            continue
+    
+    return None
+
+async def fetch_paper_references(semantic_scholar_id: str, max_retries: int = 8) -> List[str]:
+    """Fetch paper references from Semantic Scholar API with pagination"""
+    references = []
+    offset = 0
+    limit = 1000
+    
+    while True:
+        url = f"{SEMANTIC_SCHOLAR_API_URL}/paper/{semantic_scholar_id}/references"
+        params = {
+            'offset': offset,
+            'limit': limit,
+            'fields': REFERENCES_FIELDS
+        }
+        
+        success = False
+        backoff_base = 2
+        
+        for attempt in range(max_retries):
+            try:
+                await asyncio.sleep(random.uniform(1, 2))  # Rate limiting
+                
+                response = requests.get(url, params=params, timeout=60)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data:
+                        batch_references = data['data']
+                        references.extend(batch_references)
+                        
+                        next_offset = data.get('next')
+                        success = True
+                        break
+                        
+                elif response.status_code == 429:
+                    wait_time = backoff_base ** attempt + random.uniform(0, 2)
+                    logger.warning(f"Rate limited fetching references for {semantic_scholar_id}, waiting {wait_time:.2f}s")
+                    await asyncio.sleep(wait_time)
+                    continue
+                    
+                else:
+                    logger.warning(f"Error fetching references: {response.status_code}")
+                    break
+                    
+            except Exception as e:
+                wait_time = backoff_base ** attempt
+                logger.error(f"Error fetching references for {semantic_scholar_id} (attempt {attempt + 1}): {e}")
+                await asyncio.sleep(wait_time)
+        
+        if not success:
+            logger.error(f"Failed to fetch references for {semantic_scholar_id} after {max_retries} attempts")
+            break
+            
+        if not next_offset:
+            break
+            
+        offset = next_offset
+        if offset >= 9000:  # Semantic Scholar API limit
+            break
+    
+    logger.info(f"Fetched {len(references)} references for {semantic_scholar_id}")
+    return references
+
+async def load_processed_semantic_ids() -> Set[str]:
+    """Load already processed semantic scholar IDs from references file"""
+    processed_ids = set()
+    
+    if os.path.exists(REFERENCES_FILE):
+        try:
+            with open(REFERENCES_FILE, 'r') as f:
+                for line_num, line in enumerate(f, 1):
+                    try:
+                        citation = json.loads(line)
+                        if 'citingPaperId' in citation:
+                            processed_ids.add(citation['citingPaperId'])
+                    except json.JSONDecodeError:
+                        if line_num % 10000 == 0:
+                            logger.warning(f"Invalid JSON at line {line_num} in references file")
+                        continue
+        except Exception as e:
+            logger.error(f"Error loading processed semantic IDs: {e}")
+    
+    logger.info(f"Loaded {len(processed_ids)} processed semantic scholar IDs")
+    return processed_ids
+
+async def append_references_to_file(references: List[str], citing_paper_id: str):
+    """Append new references to the references_complete.jsonl file"""
+    try:
+        with open(REFERENCES_FILE, 'a') as f:
+            for reference in references:
+                if reference:  # Skip empty references
+                    reference['citingPaperId'] = citing_paper_id
+                    f.write(json.dumps(reference) + '\n')
+        
+        logger.info(f"Appended {len(references)} references for paper {citing_paper_id}")
+        
+    except Exception as e:
+        logger.error(f"Error appending references to file: {e}")
+        PIPELINE_ERRORS.labels(stage='file_write', error_type='append_error').inc()
 
 async def consume_enriched_papers():
     """Background consumer for semantic-enriched papers"""

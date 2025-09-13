@@ -217,8 +217,8 @@ data:
     def publish_new_papers_to_kafka():
         """Get new papers and publish to Kafka"""
         try:
-            # Get new papers from arxiv service
-            response = requests.get('http://arxiv-ingestion-service:8004/data/new-papers?limit=1000')
+            # Get ALL new papers from arxiv service (now with ML filtering, no limit for full fidelity)
+            response = requests.get('http://arxiv-ingestion-service:8004/data/new-papers')
             if response.status_code == 200:
                 papers_data = response.json()
                 papers = papers_data.get('papers', [])
@@ -237,23 +237,98 @@ data:
                             'event_type': 'new_paper'
                         })
                     
-                    # Publish to data pipeline service
+                    # Publish to data pipeline service (now with real Semantic Scholar integration)
                     response = requests.post(
                         'http://data-pipeline-service:8005/events/new-papers',
                         json=kafka_events,
-                        timeout=300
+                        timeout=1800  # 30 minutes for Semantic Scholar processing
                     )
                     
                     if response.status_code == 200:
-                        return f"Published {len(kafka_events)} papers to Kafka"
+                        return f"Published {len(kafka_events)} papers to data pipeline"
                     else:
-                        raise Exception(f"Kafka publish failed: {response.status_code}")
+                        raise Exception(f"Data pipeline publish failed: {response.status_code}")
                 else:
                     return "No new papers to publish"
             else:
                 raise Exception(f"Failed to get papers: {response.status_code}")
         except Exception as e:
-            raise Exception(f"Kafka publishing failed: {str(e)}")
+            raise Exception(f"Pipeline publishing failed: {str(e)}")
+
+    def wait_for_pipeline_completion():
+        """Wait for data pipeline to complete processing"""
+        import time
+        max_wait = 3600  # 1 hour max wait
+        wait_interval = 60  # Check every minute
+        elapsed = 0
+        
+        while elapsed < max_wait:
+            try:
+                response = requests.get('http://data-pipeline-service:8005/status', timeout=10)
+                if response.status_code == 200:
+                    status = response.json()
+                    if status.get('status') == 'idle':  # Pipeline completed
+                        return f"Pipeline completed processing"
+                    elif status.get('status') == 'error':
+                        raise Exception(f"Pipeline error: {status.get('message', 'Unknown error')}")
+                
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+                
+            except Exception as e:
+                print(f"Error checking pipeline status: {e}")
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+        
+        raise Exception("Pipeline processing timed out")
+
+    def trigger_graph_build():
+        """Trigger graph builder service to run C++ and update Neo4j"""
+        try:
+            response = requests.post(
+                'http://graph-builder-service:8006/build-graph',
+                json={'timeout_minutes': 120},
+                timeout=7200  # 2 hours timeout
+            )
+            
+            if response.status_code == 200:
+                return "Graph build triggered successfully"
+            else:
+                raise Exception(f"Graph build trigger failed: {response.status_code} - {response.text}")
+                
+        except Exception as e:
+            raise Exception(f"Graph build trigger failed: {str(e)}")
+
+    def check_graph_build_completion():
+        """Check if graph build completed successfully"""
+        import time
+        max_wait = 7200  # 2 hours max wait
+        wait_interval = 120  # Check every 2 minutes
+        elapsed = 0
+        
+        while elapsed < max_wait:
+            try:
+                response = requests.get('http://graph-builder-service:8006/status', timeout=10)
+                if response.status_code == 200:
+                    status = response.json()
+                    build_status = status.get('status')
+                    
+                    if build_status == 'completed':
+                        return f"Graph build completed: {status.get('message', 'Success')}"
+                    elif build_status == 'failed':
+                        raise Exception(f"Graph build failed: {status.get('message', 'Unknown error')}")
+                    elif build_status in ['idle', 'building', 'running']:
+                        print(f"Graph build status: {build_status} - {status.get('message', '')}")
+                
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+                
+            except Exception as e:
+                print(f"Error checking graph build status: {e}")
+                time.sleep(wait_interval)
+                elapsed += wait_interval
+        
+        raise Exception("Graph build timed out")
 
     # Define tasks
     health_check = PythonOperator(
@@ -280,14 +355,32 @@ data:
         dag=dag,
     )
 
-    publish_to_kafka = PythonOperator(
-        task_id='publish_papers_to_kafka',
+    publish_to_pipeline = PythonOperator(
+        task_id='publish_papers_to_pipeline',
         python_callable=publish_new_papers_to_kafka,
         dag=dag,
     )
 
-    # Define task dependencies
-    health_check >> start_ingestion >> wait_for_completion >> check_completion >> publish_to_kafka
+    wait_pipeline = PythonOperator(
+        task_id='wait_for_pipeline_completion',
+        python_callable=wait_for_pipeline_completion,
+        dag=dag,
+    )
+
+    trigger_graph = PythonOperator(
+        task_id='trigger_graph_build',
+        python_callable=trigger_graph_build,
+        dag=dag,
+    )
+
+    check_graph = PythonOperator(
+        task_id='check_graph_build_completion',
+        python_callable=check_graph_build_completion,
+        dag=dag,
+    )
+
+    # Define task dependencies - Complete pipeline flow
+    health_check >> start_ingestion >> wait_for_completion >> check_completion >> publish_to_pipeline >> wait_pipeline >> trigger_graph >> check_graph
 
   graph_maintenance_pipeline.py: |
     from datetime import datetime, timedelta
