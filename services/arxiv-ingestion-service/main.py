@@ -8,6 +8,7 @@ import time
 import zipfile
 from datetime import datetime, timedelta
 import logging
+import requests
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response
 
@@ -147,9 +148,9 @@ def process_arxiv_metadata(metadata_file: str, filter_years: int = 5) -> Dict[st
     """Process arXiv metadata and extract new papers"""
     logger.info(f"Processing metadata file: {metadata_file}")
     
-    # Load existing processed data from shared volume
-    processed_file = "/shared-data/processed_papers.json"
-    arxiv_data_file = "/shared-data/arxiv_data.pkl"
+    # Load existing processed data from individual PVC
+    processed_file = "/data/processed_papers.json"
+    arxiv_data_file = "/data/arxiv_data.pkl"
     existing_papers = set()
     
     # First try lightweight processed_file for quick ID checks
@@ -249,6 +250,8 @@ def process_arxiv_metadata(metadata_file: str, filter_years: int = 5) -> Dict[st
             with open(new_papers_file, 'w') as f:
                 json.dump(new_papers, f, indent=2)
             logger.info(f"Saved {len(new_papers)} new papers to {new_papers_file}")
+            
+            # Note: New papers will be sent via Kafka by the ingestion process, not direct API calls
         
         NEW_PAPERS_FOUND.set(len(new_papers))
         
@@ -363,6 +366,200 @@ async def get_new_papers():
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving papers: {str(e)}")
+
+# Batch processing models
+class PapersBatch(BaseModel):
+    papers: List[Dict]
+    source_service: str = "arxiv-ingestion-service"
+
+class PaperIdsBatch(BaseModel):
+    paper_ids: List[str]
+
+# Batch APIs for handling millions of paper IDs efficiently
+@app.get("/batch/arxiv-papers")
+async def get_arxiv_papers_batch(limit: int = 1000, offset: int = 0):
+    """Get batch of processed arXiv papers for other services"""
+    try:
+        arxiv_data_file = "/data/arxiv_data.pkl"
+        
+        if not os.path.exists(arxiv_data_file):
+            return {
+                "papers": [],
+                "total_count": 0,
+                "batch_size": 0,
+                "offset": offset,
+                "has_more": False,
+                "message": "No arXiv data available yet"
+            }
+        
+        # Load data
+        df = pd.read_pickle(arxiv_data_file)
+        
+        # Apply pagination
+        start_idx = offset
+        end_idx = min(offset + limit, len(df))
+        batch_df = df.iloc[start_idx:end_idx]
+        
+        # Convert to dict format
+        papers = batch_df.to_dict('records')
+        
+        return {
+            "papers": papers,
+            "total_count": len(df),
+            "batch_size": len(papers),
+            "offset": offset,
+            "has_more": end_idx < len(df)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving arXiv papers batch: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve papers batch: {str(e)}")
+
+@app.post("/batch/papers/transfer")
+async def receive_papers_batch(batch: PapersBatch):
+    """Receive batch of papers from other services (max 1000 papers)"""
+    if len(batch.papers) > 1000:
+        raise HTTPException(status_code=400, detail="Batch too large. Maximum 1000 papers per batch.")
+    
+    try:
+        # Store papers in a separate file for processing
+        batch_file = f"/data/received_papers_batch_{int(time.time() * 1000)}.json"
+        
+        batch_data = {
+            "papers": batch.papers,
+            "source_service": batch.source_service,
+            "received_at": datetime.now().isoformat(),
+            "count": len(batch.papers)
+        }
+        
+        with open(batch_file, 'w') as f:
+            json.dump(batch_data, f, indent=2)
+        
+        logger.info(f"Received batch of {len(batch.papers)} papers from {batch.source_service}")
+        
+        return {
+            "status": "received",
+            "papers_count": len(batch.papers),
+            "source_service": batch.source_service,
+            "batch_file": batch_file,
+            "message": f"Successfully stored {len(batch.papers)} papers"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error receiving papers batch: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to store papers batch: {str(e)}")
+
+@app.get("/batch/paper-ids")
+async def get_paper_ids_batch(limit: int = 1000, offset: int = 0):
+    """Get batch of paper IDs for efficient communication with other services"""
+    try:
+        # First try from processed_papers.json (faster)
+        processed_file = "/data/processed_papers.json"
+        if os.path.exists(processed_file):
+            with open(processed_file, 'r') as f:
+                processed_data = json.load(f)
+                paper_ids = processed_data.get('paper_ids', [])
+        else:
+            # Fallback to arxiv_data.pkl
+            arxiv_data_file = "/data/arxiv_data.pkl"
+            if not os.path.exists(arxiv_data_file):
+                return {
+                    "paper_ids": [],
+                    "total_count": 0,
+                    "batch_size": 0,
+                    "offset": offset,
+                    "has_more": False,
+                    "message": "No paper data available yet"
+                }
+            
+            df = pd.read_pickle(arxiv_data_file)
+            paper_ids = df['id'].astype(str).tolist()
+        
+        # Apply pagination
+        start_idx = offset
+        end_idx = min(offset + limit, len(paper_ids))
+        batch = paper_ids[start_idx:end_idx]
+        
+        return {
+            "paper_ids": batch,
+            "total_count": len(paper_ids),
+            "batch_size": len(batch),
+            "offset": offset,
+            "has_more": end_idx < len(paper_ids)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving paper IDs batch: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve paper IDs: {str(e)}")
+
+@app.post("/batch/request-processing")
+async def request_processing_batch(request: PaperIdsBatch):
+    """Request processing for a batch of paper IDs from data pipeline service"""
+    if len(request.paper_ids) > 1000:
+        raise HTTPException(status_code=400, detail="Batch too large. Maximum 1000 paper IDs per request.")
+    
+    try:
+        # Call data pipeline service to process these papers
+        data_pipeline_url = "http://data-pipeline-service:8005"
+        
+        payload = {
+            "papers": [{"id": paper_id} for paper_id in request.paper_ids]
+        }
+        
+        response = requests.post(
+            f"{data_pipeline_url}/events/new-papers",
+            json=payload,
+            timeout=300
+        )
+        
+        if response.status_code != 200:
+            raise HTTPException(status_code=response.status_code, detail=f"Data pipeline service error: {response.text}")
+        
+        result = response.json()
+        logger.info(f"Requested processing for {len(request.paper_ids)} paper IDs")
+        
+        return {
+            "status": "requested",
+            "paper_ids_count": len(request.paper_ids),
+            "data_pipeline_response": result,
+            "message": f"Successfully requested processing for {len(request.paper_ids)} papers"
+        }
+        
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Request to data pipeline service timed out")
+    except Exception as e:
+        logger.error(f"Error requesting processing batch: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to request processing: {str(e)}")
+
+@app.get("/data/files")
+async def get_data_files():
+    """Get list of data files in the individual PVC"""
+    try:
+        data_dir = "/data"
+        files_info = []
+        
+        if not os.path.exists(data_dir):
+            return {"data_directory": data_dir, "files": [], "total_files": 0, "message": "Data directory not found"}
+        
+        for filename in os.listdir(data_dir):
+            file_path = os.path.join(data_dir, filename)
+            if os.path.isfile(file_path):
+                stat = os.stat(file_path)
+                files_info.append({
+                    "name": filename,
+                    "size_mb": round(stat.st_size / (1024 * 1024), 2),
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat()
+                })
+        
+        return {
+            "data_directory": data_dir,
+            "files": files_info,
+            "total_files": len(files_info)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing data files: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list data files: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -15,23 +15,6 @@ spec:
       labels:
         app: graph-builder-service
     spec:
-      # Init container to fix shared-data permissions
-      initContainers:
-      - name: fix-permissions
-        image: busybox:1.36
-        command: 
-        - sh
-        - -c
-        - |
-          # Ensure shared-data is writable for appuser (uid 1000)
-          mkdir -p /shared-data
-          chown -R 1000:1000 /shared-data
-          chmod -R 755 /shared-data
-        volumeMounts:
-        - name: shared-data
-          mountPath: /shared-data
-        securityContext:
-          runAsUser: 0
       containers:
       - name: graph-builder-service
         image: graph-builder-service:dev
@@ -42,8 +25,8 @@ spec:
         - name: NEO4J_SERVICE_URL
           value: "http://neo4j-service:8003"
         volumeMounts:
-        - name: shared-data
-          mountPath: /shared-data
+        - name: graph-builder-volume
+          mountPath: /data
         resources:
           requests:
             memory: "2Gi"
@@ -67,9 +50,9 @@ spec:
           periodSeconds: 30
           timeoutSeconds: 15
       volumes:
-      - name: shared-data
+      - name: graph-builder-volume
         persistentVolumeClaim:
-          claimName: shared-data-pvc
+          claimName: graph-builder-pvc
 ---
 apiVersion: v1
 kind: Service

@@ -15,23 +15,6 @@ spec:
       labels:
         app: data-pipeline-service
     spec:
-      # Init container to fix shared-data permissions
-      initContainers:
-      - name: fix-permissions
-        image: busybox:1.36
-        command: 
-        - sh
-        - -c
-        - |
-          # Ensure shared-data is writable for appuser (uid 1000)
-          mkdir -p /shared-data
-          chown -R 1000:1000 /shared-data
-          chmod -R 755 /shared-data
-        volumeMounts:
-        - name: shared-data
-          mountPath: /shared-data
-        securityContext:
-          runAsUser: 0
       containers:
       - name: data-pipeline-service
         image: data-pipeline-service:dev
@@ -46,8 +29,8 @@ spec:
         - name: REDIS_PORT
           value: "6379"
         volumeMounts:
-        - name: shared-data
-          mountPath: /shared-data
+        - name: data-pipeline-volume
+          mountPath: /data
         resources:
           requests:
             memory: "1Gi"
@@ -70,9 +53,9 @@ spec:
           periodSeconds: 10
           timeoutSeconds: 5
       volumes:
-      - name: shared-data
+      - name: data-pipeline-volume
         persistentVolumeClaim:
-          claimName: shared-data-pvc
+          claimName: data-pipeline-pvc
 ---
 apiVersion: v1
 kind: Service

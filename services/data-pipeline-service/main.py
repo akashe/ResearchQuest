@@ -24,7 +24,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('/shared-data/data-pipeline.log')
+        logging.FileHandler('/data/data-pipeline.log')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -34,10 +34,10 @@ SEMANTIC_SCHOLAR_API_URL = "https://api.semanticscholar.org/graph/v1"
 SEMANTIC_SCHOLAR_FIELDS = "url,year,citationCount,tldr"
 REFERENCES_FIELDS = "paperId,title,contexts,year,citationCount,abstract"
 
-# Shared data paths
-SHARED_DATA_PATH = "/shared-data"
-REFERENCES_FILE = f"{SHARED_DATA_PATH}/references_complete.jsonl"
-ARXIV_DATA_FILE = f"{SHARED_DATA_PATH}/arxiv_data.pkl"
+# Data paths (using individual PVC mount)
+DATA_PATH = "/data"
+REFERENCES_FILE = f"{DATA_PATH}/references_complete.jsonl"
+ARXIV_DATA_FILE = f"{DATA_PATH}/arxiv_data.pkl"
 
 # Metrics
 KAFKA_MESSAGES_PRODUCED = Counter('pipeline_kafka_messages_produced_total', 'Total messages produced to Kafka', ['topic'])
@@ -88,6 +88,23 @@ class QualityFilter(BaseModel):
     quality_score: float
     passed_filter: bool
     reasons: List[str] = []
+
+class BatchProcessingRequest(BaseModel):
+    semantic_ids: List[str]
+    batch_size: int = 1000
+    max_batches: int = 10
+
+class BatchProcessingResponse(BaseModel):
+    batch_id: str
+    status: str  # queued, processing, completed, error
+    total_ids: int
+    processed_ids: int
+    estimated_time_remaining: Optional[int] = None
+    error_message: Optional[str] = None
+
+class SemanticIdBatch(BaseModel):
+    semantic_ids: List[str]
+    source_paper_ids: List[str] = []
 
 @app.on_event("startup")
 async def startup_event():
@@ -402,8 +419,9 @@ async def load_processed_semantic_ids() -> Set[str]:
     return processed_ids
 
 async def append_references_to_file(references: List[str], citing_paper_id: str):
-    """Append new references to the references_complete.jsonl file"""
+    """Append new references locally AND send to graph-builder-service via batch API"""
     try:
+        # Store locally in our PVC
         with open(REFERENCES_FILE, 'a') as f:
             for reference in references:
                 if reference:  # Skip empty references
@@ -412,9 +430,44 @@ async def append_references_to_file(references: List[str], citing_paper_id: str)
         
         logger.info(f"Appended {len(references)} references for paper {citing_paper_id}")
         
+        # Send to graph-builder-service via batch API (max 1000 citations per batch)
+        if references:
+            citations_batch = [ref for ref in references if ref]  # Filter empty references
+            if len(citations_batch) > 1000:
+                # Split into multiple batches
+                for i in range(0, len(citations_batch), 1000):
+                    batch = citations_batch[i:i+1000]
+                    await send_citations_to_graph_builder(batch)
+            else:
+                await send_citations_to_graph_builder(citations_batch)
+        
     except Exception as e:
         logger.error(f"Error appending references to file: {e}")
         PIPELINE_ERRORS.labels(stage='file_write', error_type='append_error').inc()
+
+async def send_citations_to_graph_builder(citations: List[Dict]):
+    """Send citations batch to graph-builder-service"""
+    try:
+        graph_builder_url = "http://graph-builder-service:8006"
+        
+        payload = {
+            "citations": citations,
+            "source_service": "data-pipeline-service"
+        }
+        
+        response = requests.post(
+            f"{graph_builder_url}/batch/citations",
+            json=payload,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            logger.info(f"Successfully sent {len(citations)} citations to graph-builder-service")
+        else:
+            logger.warning(f"Failed to send citations to graph-builder-service: {response.status_code} - {response.text}")
+            
+    except Exception as e:
+        logger.error(f"Error sending citations to graph-builder-service: {e}")
 
 async def consume_enriched_papers():
     """Background consumer for semantic-enriched papers"""
@@ -536,6 +589,223 @@ async def get_topics_status():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get topics status: {str(e)}")
+
+# Batch processing endpoints for handling millions of semantic IDs
+batch_jobs = {}  # In production, this would be in Redis
+
+@app.post("/batch/semantic-ids", response_model=BatchProcessingResponse)
+async def process_semantic_ids_batch(request: BatchProcessingRequest, background_tasks: BackgroundTasks):
+    """Process large batches of semantic IDs efficiently"""
+    import uuid
+    
+    batch_id = str(uuid.uuid4())
+    total_ids = len(request.semantic_ids)
+    
+    # Validate batch size limits
+    if total_ids > 100000:  # 100k limit per batch
+        raise HTTPException(status_code=400, detail="Batch size too large. Maximum 100,000 semantic IDs per batch.")
+    
+    if request.batch_size > 1000:
+        raise HTTPException(status_code=400, detail="Individual batch size too large. Maximum 1,000 IDs per sub-batch.")
+    
+    # Initialize batch job
+    batch_jobs[batch_id] = {
+        "status": "queued",
+        "total_ids": total_ids,
+        "processed_ids": 0,
+        "created_at": datetime.utcnow(),
+        "semantic_ids": request.semantic_ids,
+        "batch_size": request.batch_size
+    }
+    
+    # Start background processing
+    background_tasks.add_task(process_semantic_ids_background, batch_id, request)
+    
+    return BatchProcessingResponse(
+        batch_id=batch_id,
+        status="queued",
+        total_ids=total_ids,
+        processed_ids=0,
+        estimated_time_remaining=total_ids // 10  # Rough estimate: 10 IDs per second
+    )
+
+@app.get("/batch/{batch_id}/status", response_model=BatchProcessingResponse)
+async def get_batch_status(batch_id: str):
+    """Get batch processing status"""
+    if batch_id not in batch_jobs:
+        raise HTTPException(status_code=404, detail="Batch job not found")
+    
+    job = batch_jobs[batch_id]
+    
+    # Calculate estimated time remaining
+    if job["status"] == "processing" and job["processed_ids"] > 0:
+        elapsed_time = (datetime.utcnow() - job["created_at"]).total_seconds()
+        processing_rate = job["processed_ids"] / elapsed_time
+        remaining_ids = job["total_ids"] - job["processed_ids"]
+        estimated_time = int(remaining_ids / processing_rate) if processing_rate > 0 else None
+    else:
+        estimated_time = None
+    
+    return BatchProcessingResponse(
+        batch_id=batch_id,
+        status=job["status"],
+        total_ids=job["total_ids"],
+        processed_ids=job["processed_ids"],
+        estimated_time_remaining=estimated_time,
+        error_message=job.get("error_message")
+    )
+
+@app.post("/batch/semantic-ids/transfer")
+async def transfer_semantic_ids_batch(batch: SemanticIdBatch):
+    """Receive batch of semantic IDs from another service (max 1000 IDs)"""
+    if len(batch.semantic_ids) > 1000:
+        raise HTTPException(status_code=400, detail="Batch too large. Maximum 1000 semantic IDs per transfer.")
+    
+    try:
+        # Store semantic IDs for processing
+        batch_data = {
+            "semantic_ids": batch.semantic_ids,
+            "source_paper_ids": batch.source_paper_ids,
+            "received_at": datetime.utcnow().isoformat()
+        }
+        
+        # Cache the batch for processing
+        batch_key = f"semantic_batch:{int(time.time() * 1000)}"
+        redis_client.setex(batch_key, 3600, json.dumps(batch_data))  # 1 hour TTL
+        
+        logger.info(f"Received batch of {len(batch.semantic_ids)} semantic IDs")
+        
+        return {
+            "status": "received",
+            "batch_key": batch_key,
+            "semantic_ids_count": len(batch.semantic_ids),
+            "message": "Batch received and queued for processing"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error receiving semantic IDs batch: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to receive batch: {str(e)}")
+
+@app.get("/batch/processed-ids")
+async def get_processed_semantic_ids(limit: int = 1000, offset: int = 0):
+    """Get batch of already processed semantic scholar IDs"""
+    try:
+        processed_ids = await load_processed_semantic_ids()
+        processed_list = list(processed_ids)
+        
+        # Apply pagination
+        start_idx = offset
+        end_idx = min(offset + limit, len(processed_list))
+        batch = processed_list[start_idx:end_idx]
+        
+        return {
+            "semantic_ids": batch,
+            "total_count": len(processed_list),
+            "batch_size": len(batch),
+            "offset": offset,
+            "has_more": end_idx < len(processed_list)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving processed semantic IDs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve processed IDs: {str(e)}")
+
+@app.get("/batch/citations")
+async def get_citations_batch(limit: int = 1000, offset: int = 0):
+    """Get batch of citations from references_complete.jsonl for graph building"""
+    try:
+        citations = []
+        current_offset = 0
+        
+        if not os.path.exists(REFERENCES_FILE):
+            return {
+                "citations": [],
+                "total_count": 0,
+                "batch_size": 0,
+                "offset": offset,
+                "has_more": False,
+                "message": "No references file found"
+            }
+        
+        # Read through the JSONL file to get the requested batch
+        with open(REFERENCES_FILE, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                # Skip lines until we reach the offset
+                if current_offset < offset:
+                    current_offset += 1
+                    continue
+                
+                # Stop if we've collected enough citations
+                if len(citations) >= limit:
+                    break
+                
+                try:
+                    citation = json.loads(line.strip())
+                    citations.append(citation)
+                except json.JSONDecodeError:
+                    continue
+                
+                current_offset += 1
+        
+        # Count total lines for has_more flag (this is expensive but necessary)
+        total_count = sum(1 for _ in open(REFERENCES_FILE, 'r'))
+        
+        return {
+            "citations": citations,
+            "total_count": total_count,
+            "batch_size": len(citations),
+            "offset": offset,
+            "has_more": (offset + len(citations)) < total_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Error retrieving citations batch: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve citations: {str(e)}")
+
+async def process_semantic_ids_background(batch_id: str, request: BatchProcessingRequest):
+    """Background task to process large batches of semantic IDs"""
+    try:
+        job = batch_jobs[batch_id]
+        job["status"] = "processing"
+        
+        semantic_ids = request.semantic_ids
+        batch_size = request.batch_size
+        processed_count = 0
+        
+        # Process in smaller batches
+        for i in range(0, len(semantic_ids), batch_size):
+            batch = semantic_ids[i:i + batch_size]
+            
+            # Process batch of semantic IDs
+            await process_semantic_id_batch(batch)
+            
+            processed_count += len(batch)
+            job["processed_ids"] = processed_count
+            
+            # Rate limiting between batches
+            await asyncio.sleep(2)
+        
+        job["status"] = "completed"
+        logger.info(f"Completed batch processing for {batch_id}: {processed_count} semantic IDs")
+        
+    except Exception as e:
+        logger.error(f"Error in batch processing {batch_id}: {e}")
+        batch_jobs[batch_id]["status"] = "error"
+        batch_jobs[batch_id]["error_message"] = str(e)
+
+async def process_semantic_id_batch(semantic_ids: List[str]):
+    """Process a single batch of semantic IDs"""
+    for semantic_id in semantic_ids:
+        try:
+            # Fetch references for this semantic ID
+            references = await fetch_paper_references(semantic_id)
+            
+            if references:
+                await append_references_to_file(references, semantic_id)
+                
+        except Exception as e:
+            logger.error(f"Error processing semantic ID {semantic_id}: {e}")
+            continue
 
 if __name__ == "__main__":
     import uvicorn

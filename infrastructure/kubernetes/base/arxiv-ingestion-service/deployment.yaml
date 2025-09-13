@@ -15,23 +15,6 @@ spec:
       labels:
         app: arxiv-ingestion-service
     spec:
-      # Init container to fix shared-data permissions
-      initContainers:
-      - name: fix-permissions
-        image: busybox:1.36
-        command: 
-        - sh
-        - -c
-        - |
-          # Create directory and set permissions for appuser (uid 1000)
-          mkdir -p /shared-data
-          chown -R 1000:1000 /shared-data
-          chmod -R 755 /shared-data
-        volumeMounts:
-        - name: shared-data
-          mountPath: /shared-data
-        securityContext:
-          runAsUser: 0  # Run as root to change permissions
       containers:
       - name: arxiv-ingestion-service
         image: arxiv-ingestion-service:dev
@@ -45,8 +28,6 @@ spec:
         - name: kaggle-credentials
           mountPath: /home/appuser/.kaggle
           readOnly: true
-        - name: shared-data
-          mountPath: /shared-data
         - name: data-volume
           mountPath: /data
         resources:
@@ -79,9 +60,6 @@ spec:
           items:
           - key: kaggle.json
             path: kaggle.json
-      - name: shared-data
-        persistentVolumeClaim:
-          claimName: shared-data-pvc
       - name: data-volume
         persistentVolumeClaim:
           claimName: arxiv-data-pvc

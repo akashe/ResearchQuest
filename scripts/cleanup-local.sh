@@ -42,6 +42,40 @@ pkill -f "minikube mount" && echo -e "${GREEN}✅ Mount processes stopped${NC}" 
 #     echo -e "${GREEN}✅ PVCs cleaned up${NC}"
 # fi
 
+# Clean up individual service PVCs (NEW: replacing shared-data-pvc)
+if kubectl get namespace rag-system > /dev/null 2>&1; then
+    echo -e "${YELLOW}Cleaning up individual service PVCs...${NC}"
+    
+    # Clean up data-pipeline service PVC (contains large references.jsonl)
+    if kubectl get pvc data-pipeline-pvc -n rag-system > /dev/null 2>&1; then
+        echo -e "${YELLOW}Deleting data-pipeline-pvc (contains large files)...${NC}"
+        timeout 180 kubectl delete pvc data-pipeline-pvc -n rag-system || {
+            echo -e "${YELLOW}⚠️  PVC deletion timed out, force deleting...${NC}"
+            kubectl delete pvc data-pipeline-pvc -n rag-system --force --grace-period=0 2>/dev/null || true
+            kubectl patch pvc data-pipeline-pvc -n rag-system -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+        }
+    fi
+    
+    # Clean up graph-builder service PVC  
+    if kubectl get pvc graph-builder-pvc -n rag-system > /dev/null 2>&1; then
+        echo -e "${YELLOW}Deleting graph-builder-pvc...${NC}"
+        timeout 120 kubectl delete pvc graph-builder-pvc -n rag-system || {
+            kubectl delete pvc graph-builder-pvc -n rag-system --force --grace-period=0 2>/dev/null || true
+            kubectl patch pvc graph-builder-pvc -n rag-system -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+        }
+    fi
+    
+    # Clean up any remaining PVCs
+    timeout 60 kubectl delete pvc --all -n rag-system 2>/dev/null || {
+        echo -e "${YELLOW}⚠️  Remaining PVC deletion timed out, force deleting...${NC}"
+        kubectl delete pvc --all -n rag-system --force --grace-period=0 2>/dev/null || true
+        for pvc in $(kubectl get pvc -n rag-system -o name 2>/dev/null); do
+            kubectl patch $pvc -n rag-system -p '{"metadata":{"finalizers":null}}' --type=merge 2>/dev/null || true
+        done
+    }
+    echo -e "${GREEN}✅ Individual PVCs cleaned up${NC}"
+fi
+
 # Delete the namespace (this removes all remaining resources)
 if kubectl get namespace rag-system > /dev/null 2>&1; then
     echo -e "${YELLOW}Deleting rag-system namespace with timeout...${NC}"

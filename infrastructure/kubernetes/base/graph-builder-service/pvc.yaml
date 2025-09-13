@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: graph-builder-pvc
+  namespace: rag-system
+  labels:
+    app: graph-builder-service
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi  # For C++ inputs/outputs, citation CSVs, working files
+  storageClass: standard

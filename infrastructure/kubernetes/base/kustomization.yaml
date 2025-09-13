@@ -4,7 +4,6 @@ kind: Kustomization
 resources:
 - namespace.yaml
 - secrets.yaml
-- shared-data-pvc.yaml
 - query-service/deployment.yaml
 - retrieval-service/deployment.yaml
 - generation-service/deployment.yaml
@@ -20,7 +19,9 @@ resources:
 - kaggle-secret.yaml
 - arxiv-ingestion-service/deployment.yaml
 - graph-builder-service/deployment.yaml
+- graph-builder-service/pvc.yaml
+- data-pipeline-service/deployment.yaml
+- data-pipeline-service/pvc.yaml
 - kafka.yaml
 - redis.yaml
 - airflow.yaml
-- data-pipeline-service/deployment.yaml
