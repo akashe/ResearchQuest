@@ -8,6 +8,8 @@ logs/
 *.db
 *.log
 
+backup/*
 
+*secrets.yaml
 .env
 .DS_Store

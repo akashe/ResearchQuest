@@ -91,17 +91,27 @@ def fetch_paper_ids(request_ids, max_retries=8):
 
 
 def main():
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--new_data", action="store_true", 
-    #                    help="Process new data from arxiv_data_new.pkl")
-    # #python get_semantic_paper_ids_for_arxiv_papers.py --new_data
-    # args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--new_data", action="store_true",
+                       help="Process new data and append to existing files")
+    args = parser.parse_args()
 
-    args_new_data = False
-    
+    args_new_data = args.new_data
+
     # Read arxiv paper ids
-    input_file = "data/arxiv_data_new.pkl" if args_new_data else "data/arxiv_data.pkl"
+    input_file = "data/arxiv_data.pkl"
     df = pd.read_pickle(input_file)
+
+    # Filter out already processed papers when appending new data
+    if args_new_data and os.path.exists("data/arxiv_papers_with_semantic_scholar_ids.csv"):
+        existing_df = pd.read_csv("data/arxiv_papers_with_semantic_scholar_ids.csv")
+        existing_ids = set(existing_df['id'])
+        df = df[~df['id'].isin(existing_ids)]
+        print(f'Filtered out {len(existing_ids)} existing papers, processing {len(df)} new papers')
+
+    if args_new_data and len(df) == 0:
+        print("No new papers to process. Exiting.")
+        return
 
     df_keys = df['id'].tolist()
     arxiv_ids = df_keys
@@ -122,14 +132,18 @@ def main():
         for df_details, result in zip(df_keys[i:i + iterator], semantic_scholar_results):
             try:
                 if result is not None:
-                    result = {i: result['tldr']['text'] if i=='tldr' and result[i] is not None else result[i] for i in result.keys()}
-                    if result['tldr'] is None:
+                    # Extract tldr text safely
+                    if result.get('tldr') is not None and isinstance(result['tldr'], dict):
+                        result['tldr'] = result['tldr'].get('text', "No TLDR available")
+                    else:
                         result['tldr'] = "No TLDR available"
                     paper_results.append({'id': df_details, **result})
                 else:
                     failed_paper_ids.append(df_details)
             except Exception as e:
                 failed_paper_ids.append(df_details)
+
+        time.sleep(1) 
 
     print(f'Total failed paper ids {len(failed_paper_ids)}')
 
@@ -138,23 +152,29 @@ def main():
     merged_df = pd.merge(results_df, df, on='id', how='inner')
 
     if args_new_data:
-        append_to_csv(merged_df, "data/arxiv_papers_with_semantic_scholar_ids.csv")
+        # Append with headers if file doesn't exist
+        file1 = "data/arxiv_papers_with_semantic_scholar_ids.csv"
+        file2 = "data/semantic_scholar_paper_details_for_c_code.csv"
+        file3 = "data/arxiv_papers_with_no_semantic_scholar_ids.json"
+
+        header_needed1 = not os.path.exists(file1)
+        merged_df.to_csv(file1, mode='a', header=header_needed1)
 
         df_for_c_code = merged_df[['paperId', 'url', 'title', 'year', 'citationCount']]
-        append_to_csv(df_for_c_code, "data/semantic_scholar_paper_details_for_c_code.csv")
-        
-        append_to_json(failed_paper_ids, "data/arxiv_papers_with_no_sematic_scholar_ids.json")
-        
+        header_needed2 = not os.path.exists(file2)
+        df_for_c_code.to_csv(file2, mode='a', header=header_needed2, index=False)
+
+        append_to_json(failed_paper_ids, file3)
+
         print(f'Appended {len(merged_df)} new entries')
     else:
         merged_df.to_csv("data/arxiv_papers_with_semantic_scholar_ids.csv")
         print(f'Total entries {len(merged_df)}')
 
         df_for_c_code = merged_df[['paperId', 'url', 'title', 'year', 'citationCount']]
-        # df_for_c_code['title'] = df_for_c_code['title'].str.replace('\n', '')
         df_for_c_code.to_csv("data/semantic_scholar_paper_details_for_c_code.csv", index=False)
 
-        with open("data/arxiv_papers_with_no_sematic_scholar_ids.json", "w") as f:
+        with open("data/arxiv_papers_with_no_semantic_scholar_ids.json", "w") as f:
             json.dump(failed_paper_ids, f)
 
 

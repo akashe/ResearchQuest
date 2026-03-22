@@ -50,8 +50,8 @@ def load_existing_ids(filepath):
     """Load existing paper IDs from a pickle file."""
     if os.path.exists(filepath):
         df = pd.read_pickle(filepath)
-        return set(df['id'])
-    return set()
+        return set(df['id']),df
+    return set(), _
 
 def process_and_filter_new_data(filepath, existing_ids, relevant_categories, years):
     """Load and filter JSON data simultaneously, processing only new entries."""
@@ -131,7 +131,7 @@ def analyze_dates(filepath, relevant_categories, months=7):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("-f", "--file", type=str, required=True, help="Path to the Arxiv JSON metadata file")
+    parser.add_argument("-f", "--file", type=str, help="Path to the Arxiv JSON metadata file")
     parser.add_argument("-s", "--save_file_name", type=str, help="File name to save the filtered results",
                         default="arxiv_data.pkl")
     parser.add_argument("-y", "--years", type=int, help="Number of past years to include", default=10)
@@ -153,7 +153,7 @@ if __name__ == "__main__":
         save_data(filtered_data, os.path.join("data", args.save_file_name))
     else:
         # Load existing IDs from the original filtered data
-        existing_ids = load_existing_ids(os.path.join("data", args.save_file_name))
+        existing_ids, existing_df = load_existing_ids(os.path.join("data", args.save_file_name))
         print(f'Length of existing ids: {len(existing_ids)}')
 
         # Process new file line by line and filter simultaneously
@@ -163,7 +163,9 @@ if __name__ == "__main__":
             RELEVANT_CATEGORIES, 
             args.years
         )
-        
-        # Save new entries to a separate file
-        save_data(new_filtered_data, os.path.join("data", args.new_file))
+
+        new_df = pd.DataFrame(new_filtered_data)
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+        combined_df.to_pickle(os.path.join("data", args.save_file_name))
+
         print(f"Found {len(new_filtered_data)} new papers")

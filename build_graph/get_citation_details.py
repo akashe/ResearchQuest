@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Semaphore
 
 # Define your Semantic Scholar API key
-SEMANTIC_SCHOLAR_API_KEY = "XQRDiSXgS59uq91YOLadF2You3c4XFvv3MmXKU4o"
 SEMANTIC_SCHOLAR_API_URL = "https://api.semanticscholar.org/graph/v1"
 
 # Define the fields to be retrieved
@@ -235,6 +234,9 @@ def main():
             paper_id = paper
             citations = fetch_references(paper_id, citations_fields)
             for citation in citations:
+                if citation == -1:
+                    failed_paper_ids.append(paper_id)
+                    continue
                 citation['citingPaperId'] = paper_id  # Add the cited paper ID for context
                 citations_data.append(citation)
             save_references_to_jsonl(citations)
