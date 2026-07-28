@@ -53,7 +53,10 @@ automatically.
 
 ## MCP (Claude Code)
 
-`mcp_server.py` exposes the graph as tools, registered in `.mcp.json`:
+`mcp_server.py` exposes the graph as tools. Registered at user scope
+(`claude mcp add --scope user researchquest -- <venv-python> mcp_server.py`),
+so it's available in every Claude Code session, not just when working in
+this repo:
 
 `research_topic` (primary entry point), `create_research_subgraph`,
 `list_active_topics`, `get_top_papers_per_year`, `get_top_papers_overall`,
@@ -83,7 +86,11 @@ unencrypted port isn't an option. Getting there needed three pieces:
    [nip.io](https://nip.io) is a free public DNS service where any hostname
    of the form `<ip-with-dashes>.nip.io` automatically resolves to that IP —
    nothing to register, it's just a nameserver that parses the IP back out
-   of the hostname text. This VM uses `167-233-171-28.nip.io`.
+   of the hostname text. (The actual hostname in use isn't published here
+   deliberately — the port has to stay open to the internet since Streamlit
+   Cloud has no fixed IPs to allowlist, and while auth + TLS is the real
+   protection, there's no reason to make this specific endpoint an easy
+   target for scanners that scrape public repos.)
 2. **A real certificate**, issued by Let's Encrypt via `certbot` for that
    hostname (`certbot certonly --standalone`, using port 80 briefly to prove
    control of the hostname). Valid 90 days.

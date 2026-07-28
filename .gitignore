@@ -21,4 +21,5 @@ terraform/terraform.tfvars
 terraform/*.auto.tfvars
 
 llm_sessions/claude_code_session_28th_jul_26.md
+llm_sessions/temp_readme.md
 .claude/*
