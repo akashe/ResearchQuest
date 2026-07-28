@@ -1,6 +1,7 @@
 import re
 import streamlit as st
 import pandas as pd
+import altair as alt
 from genai import (
     summarize_topic_evolution,
     extract_key_points_state_of_art,
@@ -186,4 +187,16 @@ if st.session_state.graph_name:
         st.subheader("Year-wise Distribution")
         if st.button("Show Year-wise Distribution"):
             df = pd.DataFrame(get_year_wise_distribution(topic_name))
-            st.bar_chart(df.set_index("year")["paperCount"])
+            # st.bar_chart's default axis config left label rotation up to
+            # Vega-Lite's automatic overlap resolution — explicit Altair
+            # chart instead, forcing labelAngle=0 so years always render
+            # horizontally regardless of how many distinct years there are.
+            chart = (
+                alt.Chart(df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("year:O", title="Year", axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("paperCount:Q", title="Paper Count"),
+                )
+            )
+            st.altair_chart(chart, use_container_width=True)
