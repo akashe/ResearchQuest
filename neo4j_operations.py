@@ -161,6 +161,14 @@ def create_topic_subgraph(topic, topic_name, graph_name, validate_relationships)
         CREATE FULLTEXT INDEX paperAbstractIndex FOR (p:Paper) ON EACH [p.label, p.abstract];
         '''
         logger.info(pformat(run_query(create_index_query)))
+        # CREATE FULLTEXT INDEX only kicks off background population — it
+        # doesn't wait for the index to finish. Querying it immediately
+        # (as gds.graph.project.cypher does below, via db.index.fulltext.queryNodes)
+        # can fail with "Expected index to come online within a reasonable
+        # time" over a graph this size (~1.1M nodes' abstract text), so block
+        # here until it's actually usable.
+        logger.info("Waiting for fulltext index to come online...")
+        run_query("CALL db.awaitIndex('paperAbstractIndex', 300)")
 
     graph_name = f"subgraph_{topic_name.replace(' ', '_')}"
 
