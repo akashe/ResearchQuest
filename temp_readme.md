@@ -76,41 +76,55 @@ open unencrypted port. `docker-compose.prod.yml` adds an nginx TCP/TLS proxy
 public port 7687, Neo4j itself stays bound to `127.0.0.1` and is only reached
 over the internal Docker network — it never touches a public interface.
 
-**Validated locally end-to-end** with a throwaway self-signed cert: brought
-the full stack up (`docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`),
-confirmed nginx's config is valid (`nginx -t`), and connected with the real
-`neo4j` Python driver over `bolt+s` through the proxy — `RETURN 1` round-tripped
-correctly. The only thing to swap for production is a real cert.
+**Live and validated end-to-end** — no domain purchase needed. Used
+`167-233-171-28.nip.io` (free wildcard DNS resolving straight to the VM's
+IP — Let's Encrypt can issue real certs for it, no different from any other
+hostname). Full sequence that's actually been run on the VM:
 
-Steps on the VM:
+1. `hcloud_firewall` (`terraform/main.tf`) opens `22`, `7687` (bolt+s), and
+   `80` (Let's Encrypt HTTP-01 challenge — needed permanently, not just for
+   first issuance, since renewal needs it too). `7474` stays closed.
+2. `certbot certonly --standalone -d 167-233-171-28.nip.io --email <you> --agree-tos`
+   — real cert issued, expires 2026-10-26, Ubuntu's certbot package installs
+   its own systemd renewal timer automatically.
+3. **Gotcha found and fixed**: certbot's `live/<domain>/` is a directory of
+   *symlinks* into `../../archive/<domain>/` — bind-mounting only the `live`
+   subdir into the nginx container leaves those symlinks dangling (nginx
+   fails to start: `cannot load certificate ... no such file`). Fixed by
+   mounting the whole host `/etc/letsencrypt` tree at the same path in the
+   container instead (`docker-compose.prod.yml`), so the relative symlinks
+   resolve correctly. `nginx/bolt-proxy.conf` references the concrete
+   `/etc/letsencrypt/live/167-233-171-28.nip.io/...` path directly.
+4. Renewal reload hook installed at
+   `/etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh` (runs
+   `docker exec researchquest-bolt-proxy nginx -s reload`) — certbot runs
+   every deploy-hook in that directory automatically after a successful
+   renewal, picked up by the systemd timer with no cron needed.
+5. `CERT_DIR` env var is gone — no longer needed now that the mount is the
+   fixed `/etc/letsencrypt` path: `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`
+6. **Verified for real** — connected with the actual `neo4j` Python driver
+   over `bolt+s://167-233-171-28.nip.io:7687` from an external machine (not
+   just from the VM itself), no self-signed override needed, got back the
+   real node count. This is the same kind of connection Streamlit Cloud's
+   servers will make.
 
-1. Get a domain (or subdomain) pointing at the VM's IP.
-2. Open only ports `22` (SSH) and `7687` (bolt+s) in the firewall — do not
-   open `7474`, Neo4j Browser stays SSH-tunnel-only.
-3. Get a cert: `certbot certonly --standalone -d <your-domain>` (standalone
-   mode briefly binds port 80 for the ACME challenge — fine as a one-off,
-   nginx isn't using port 80 here).
-4. `CERT_DIR=/etc/letsencrypt/live/<your-domain> docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`
-   — certbot's output directory uses exactly `fullchain.pem`/`privkey.pem`,
-   which is what `bolt-proxy.conf` expects, no renaming needed.
-5. Set up renewal (Let's Encrypt certs expire every 90 days):
-   `certbot renew --deploy-hook "docker exec researchquest-bolt-proxy nginx -s reload"`
-   as a cron job.
-6. In Streamlit Community Cloud's app dashboard → Secrets, paste:
-   ```toml
-   [neo4j]
-   uri = "bolt+s://<your-domain>:7687"
-   user = "neo4j"
-   password = "<your NEO4J_PASSWORD>"
+**Ready to paste into Streamlit Community Cloud's app dashboard → Secrets:**
+```toml
+[neo4j]
+uri = "bolt+s://167-233-171-28.nip.io:7687"
+user = "neo4j"
+password = "<your NEO4J_PASSWORD>"
 
-   GOOGLE_API_KEY = "<your key>"
-   GOOGLE_API_MODEL = "gemini-2.5-pro"
-   ```
-   (This replaces the old k8s secrets.yaml as the place `GOOGLE_API_KEY` lives —
-   `genai.py` currently reads it via `os.environ`/`.env`, so for the deployed
-   app it needs to come from Streamlit secrets the same way `app.py` already
-   reads `st.secrets["neo4j"]` in `neo4j_operations.py`.)
-7. Deploy the app pointing at `app.py` as the main file.
+GOOGLE_API_KEY = "<your key>"
+GOOGLE_API_MODEL = "gemini-2.5-pro"
+```
+(This replaces the old k8s secrets.yaml as the place `GOOGLE_API_KEY` lives —
+`genai.py` now falls back to `st.secrets` when it's not in `os.environ`, so
+this works under Streamlit Cloud where there's no `.env` file.)
+
+Last step — deploying via the Streamlit Community Cloud dashboard itself
+(connect the GitHub repo, set `app.py` as the main file, paste the secrets
+above) — is a dashboard action only you can do.
 
 ## Phase 3: MCP for others (self-host)
 

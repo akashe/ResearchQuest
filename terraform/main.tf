@@ -17,8 +17,10 @@ resource "hcloud_ssh_key" "researchquest" {
   public_key = file(var.ssh_public_key_path)
 }
 
-# Only SSH and bolt+s are open. 7474 (Neo4j Browser) is intentionally not
-# exposed — admin access is via SSH tunnel only (see temp_readme.md Phase 1).
+# SSH, bolt+s, and 80 (Let's Encrypt HTTP-01 challenge only, needed for
+# certbot issuance and every renewal — nothing else listens on it).
+# 7474 (Neo4j Browser) is intentionally not exposed — admin access is via
+# SSH tunnel only (see temp_readme.md Phase 1).
 resource "hcloud_firewall" "researchquest" {
   name = "researchquest-fw"
 
@@ -33,6 +35,13 @@ resource "hcloud_firewall" "researchquest" {
     direction  = "in"
     protocol   = "tcp"
     port       = "7687"
+    source_ips = ["0.0.0.0/0", "::/0"]
+  }
+
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "80"
     source_ips = ["0.0.0.0/0", "::/0"]
   }
 }

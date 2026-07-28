@@ -6,10 +6,13 @@
 # fixed egress IPs to allowlist instead). Neo4j itself is never bound to a
 # public interface — nginx reaches it over the internal compose network.
 #
-# CERT_DIR must point at a directory containing fullchain.pem + privkey.pem
-# (exactly what certbot produces under /etc/letsencrypt/live/<domain>/ — set
-# CERT_DIR to that path directly on the VM, no renaming needed). Renew via
-# cron: `certbot renew --deploy-hook "docker exec researchquest-bolt-proxy nginx -s reload"`
+# Mounts the VM's whole /etc/letsencrypt tree (not just live/<domain>/) at
+# the same path inside the container — certbot's live/ dir is a directory of
+# symlinks into ../../archive/<domain>/, so mounting only the live subdir
+# leaves those symlinks dangling. nginx/bolt-proxy.conf references the exact
+# domain path directly. Renewal reload is handled by
+# /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh on the VM (runs
+# automatically via certbot's systemd timer, no cron needed on Ubuntu).
 
 services:
   neo4j:
@@ -34,4 +37,4 @@ services:
       - "7687:7687"
     volumes:
       - ./nginx/bolt-proxy.conf:/etc/nginx/nginx.conf:ro
-      - ${CERT_DIR:?set CERT_DIR to your certbot live directory}:/etc/nginx/certs:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
