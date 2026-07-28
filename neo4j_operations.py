@@ -25,7 +25,7 @@ def run_query(query, params=None):
 # Helper to execute a query in batch
 def run_batch_query(query, rows):
     with driver.session() as session:
-        session.write_transaction(lambda tx: tx.run(query, rows=rows))
+        session.execute_write(lambda tx: tx.run(query, rows=rows).consume())
     
 
 def check_data_presence():
@@ -51,9 +51,14 @@ def load_nodes_in_batches(csv_file_path, batch_size=500):
     })
     """
     with open(csv_file_path, newline='', encoding='utf-8') as f:
-        reader = list(csv.DictReader(f))
-        for i in tqdm(range(0, len(reader), batch_size), desc="Loading nodes"):
-            batch = reader[i:i+batch_size]
+        reader = csv.DictReader(f)
+        batch = []
+        for row in tqdm(reader, desc="Loading nodes"):
+            batch.append(row)
+            if len(batch) >= batch_size:
+                run_batch_query(query, batch)
+                batch = []
+        if batch:
             run_batch_query(query, batch)
 
 def create_index_on_paper_id():
@@ -91,9 +96,14 @@ def load_edges_in_batches(csv_file_path, batch_size=500):
     CREATE (source)-[:CITES]->(target)
     """
     with open(csv_file_path, newline='', encoding='utf-8') as f:
-        reader = list(csv.DictReader(f))
-        for i in tqdm(range(0, len(reader), batch_size), desc="Loading edges"):
-            batch = reader[i:i+batch_size]
+        reader = csv.DictReader(f)
+        batch = []
+        for row in tqdm(reader, desc="Loading edges"):
+            batch.append(row)
+            if len(batch) >= batch_size:
+                run_batch_query(query, batch)
+                batch = []
+        if batch:
             run_batch_query(query, batch)
 
 def remove_duplicate_edges():

@@ -1,4 +1,5 @@
 import google.generativeai as genai
+import streamlit as st
 from dotenv import load_dotenv
 from typing import List
 import pandas as pd
@@ -10,8 +11,19 @@ from datetime import datetime
 # Load environment variables from .env file
 load_dotenv()
 
-genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
-model = genai.GenerativeModel(os.environ["GOOGLE_API_MODEL"])
+
+def _get_config(key: str) -> str:
+    """Local dev reads from .env via os.environ; Streamlit Cloud has no .env
+    file and injects secrets via st.secrets instead — fall back to that."""
+    if key in os.environ:
+        return os.environ[key]
+    if key in st.secrets:
+        return st.secrets[key]
+    raise KeyError(f"'{key}' not found in environment variables or Streamlit secrets")
+
+
+genai.configure(api_key=_get_config("GOOGLE_API_KEY"))
+model = genai.GenerativeModel(_get_config("GOOGLE_API_MODEL"))
 
 def summarize_topic_evolution(df: pd.DataFrame, topic_name) -> str:
     """
