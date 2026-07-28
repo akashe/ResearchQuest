@@ -36,10 +36,12 @@ def run_batch_query(query, rows):
 
 
 def check_data_presence():
-    node_count = run_query("MATCH (n:Paper) RETURN count(n) AS node_count")[0]["node_count"]
-    edge_count = run_query("MATCH (:Paper)-[r:CITES]->(:Paper) RETURN count(r) AS edge_count")[0]["edge_count"]
-    logger.info(f"Nodes: {node_count}, Edges: {edge_count}")
-    return node_count > 0 and edge_count > 0
+    # Existence checks (LIMIT 1), not full counts — see neo4j_operations.py's
+    # check_data_presence for why (~2.3s -> ~0.3s measured on the real VM).
+    has_node = len(run_query("MATCH (n:Paper) RETURN n LIMIT 1")) > 0
+    has_edge = len(run_query("MATCH (:Paper)-[r:CITES]->(:Paper) RETURN r LIMIT 1")) > 0
+    logger.info(f"Has nodes: {has_node}, Has edges: {has_edge}")
+    return has_node and has_edge
 
 
 def load_nodes_in_batches(csv_file_path, batch_size=500):
@@ -143,6 +145,12 @@ def create_topic_subgraph(topic, topic_name, graph_name, validate_relationships)
     if len(check_index_results) == 0:
         logger.info("Creating fulltext index for paper abstracts.")
         run_query('CREATE FULLTEXT INDEX paperAbstractIndex FOR (p:Paper) ON EACH [p.label, p.abstract];')
+        # CREATE FULLTEXT INDEX only kicks off background population — querying
+        # it immediately (gds.graph.project.cypher does, via
+        # db.index.fulltext.queryNodes) can fail with "Expected index to come
+        # online within a reasonable time" over ~1.1M nodes. Block until ready.
+        logger.info("Waiting for fulltext index to come online...")
+        run_query("CALL db.awaitIndex('paperAbstractIndex', 300)")
 
     graph_name = f"subgraph_{topic_name.replace(' ', '_')}"
 
