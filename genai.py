@@ -1,10 +1,16 @@
 import google.generativeai as genai
 import streamlit as st
 from dotenv import load_dotenv
-from typing import List
+from typing import List, Callable
 import pandas as pd
 import os
+import time
 from custom_logging import logger
+
+# Papers are analyzed in batches of this size per LLM call (token-limit
+# workaround), sleeping between calls to respect API rate limits.
+CHUNK_SIZE = 500
+SLEEP_SECONDS = 30
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,11 +29,46 @@ def _get_config(key: str) -> str:
 genai.configure(api_key=_get_config("GOOGLE_API_KEY"))
 model = genai.GenerativeModel(_get_config("GOOGLE_API_MODEL"))
 
+
+def run_chunked_extraction(
+    df: pd.DataFrame,
+    extract_fn: Callable[[pd.DataFrame], str],
+    chunk_size: int = CHUNK_SIZE,
+    sleep_seconds: int = SLEEP_SECONDS,
+) -> list[str]:
+    """Splits df into row-chunks and calls extract_fn(chunk) once per chunk,
+    sleeping between calls (never after the last one) to respect API rate
+    limits. Shared by the State of the Art and Custom Question flows, which
+    only differ in which extract_fn they pass in."""
+    chunks = [df.iloc[i:i + chunk_size] for i in range(0, len(df), chunk_size)]
+    chunks = [c for c in chunks if not c.empty]
+    results = []
+    for i, chunk in enumerate(chunks):
+        results.append(extract_fn(chunk))
+        if i < len(chunks) - 1:
+            time.sleep(sleep_seconds)
+    return results
+
+
 def summarize_topic_evolution(df: pd.DataFrame, topic_name) -> str:
     """
     Summarize how the topic evolved over time using top 3 papers per year.
     Assumes df contains: title, abstract, year
+
+    Intentionally a single LLM call, not chunked like the State of the
+    Art / Custom Question flows: the UI caps this at ~50 papers/year over
+    ~8 years (~400 rows max), well within a Flash-class model's context
+    window at typical abstract lengths — and chunking would break the
+    by-year narrative that's the point of this summary (a flat row-chunker
+    would split individual years across calls).
     """
+    if len(df) > 200:
+        logger.warning(
+            f"summarize_topic_evolution got {len(df)} rows for topic '{topic_name}' — "
+            "well above the ~150-200 row range this was designed for; the summary "
+            "may be less detailed than usual."
+        )
+
     yearly_chunks = []
     for year in sorted(df["year"].unique()):
         papers = df[df["year"] == year]
