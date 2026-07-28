@@ -4,9 +4,7 @@ from dotenv import load_dotenv
 from typing import List
 import pandas as pd
 import os
-from custom_logging import logger, log_llm_usage
-import sqlite3
-from datetime import datetime
+from custom_logging import logger
 
 # Load environment variables from .env file
 load_dotenv()
@@ -56,7 +54,6 @@ def summarize_topic_evolution(df: pd.DataFrame, topic_name) -> str:
     tokens_out = response.usage_metadata.candidates_token_count
 
     logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while generating topic evaluation summary for {topic_name}.")
-    log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
@@ -94,7 +91,6 @@ def extract_key_points_state_of_art(df: pd.DataFrame, cutoff_year: int, topic_na
     tokens_out = response.usage_metadata.candidates_token_count
 
     logger.info(f"Extracted key points using {tokens_in} input and {tokens_out} output tokens for {topic_name} after {cutoff_year}.")
-    log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
@@ -132,7 +128,6 @@ def synthesize_state_of_art(extracted_points: list, topic_name: str, cutoff_year
     tokens_out = response.usage_metadata.candidates_token_count
 
     logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while synthesizing state of the art summary for {topic_name} after {cutoff_year}.")
-    log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
@@ -167,7 +162,6 @@ def extract_relevant_info_for_question(question: str, df: pd.DataFrame, cutoff_y
     tokens_out = response.usage_metadata.candidates_token_count
 
     logger.info(f"Extracted relevant info using {tokens_in} input and {tokens_out} output tokens for question '{question}' in {topic_name} after {cutoff_year}.")
-    log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
@@ -204,7 +198,6 @@ def synthesize_answer_from_extracts(extracted_info: list, question: str, topic_n
     tokens_out = response.usage_metadata.candidates_token_count
 
     logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while synthesizing answer for question '{question}' in {topic_name} after {cutoff_year}.")
-    log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
