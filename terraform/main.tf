@@ -44,6 +44,15 @@ resource "hcloud_firewall" "researchquest" {
     port       = "80"
     source_ips = ["0.0.0.0/0", "::/0"]
   }
+
+  # HTTPS for paperverse.co, sharing this VM/nginx alongside ResearchQuest's
+  # bolt proxy — see docker-compose.prod.yml.
+  rule {
+    direction  = "in"
+    protocol   = "tcp"
+    port       = "443"
+    source_ips = ["0.0.0.0/0", "::/0"]
+  }
 }
 
 resource "hcloud_server" "researchquest" {

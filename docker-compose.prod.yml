@@ -13,6 +13,12 @@
 # domain path directly. Renewal reload is handled by
 # /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh on the VM (runs
 # automatically via certbot's systemd timer, no cron needed on Ubuntu).
+#
+# Also reverse-proxies paperverse.co (443) to Paperverse's own `frontend`
+# container over the `shared-web` Docker network — a separate compose project
+# on this same VM (../Paperverse). Both certs (this VM's nip.io one and
+# paperverse.co's) now renew via --webroot against /var/www/certbot, since
+# port 80 is permanently held by this nginx (see nginx/bolt-proxy.conf).
 
 services:
   neo4j:
@@ -35,6 +41,16 @@ services:
         condition: service_healthy
     ports:
       - "7687:7687"
+      - "80:80"
+      - "443:443"
     volumes:
       - ./nginx/bolt-proxy.conf:/etc/nginx/nginx.conf:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    networks:
+      - default
+      - shared-web
+
+networks:
+  shared-web:
+    external: true
