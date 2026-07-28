@@ -1,0 +1,37 @@
+# Phase 2 override — public exposure, layered on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Adds an nginx TCP/TLS proxy in front of Neo4j so bolt is reachable over the
+# internet as bolt+s (required for Streamlit Community Cloud, which has no
+# fixed egress IPs to allowlist instead). Neo4j itself is never bound to a
+# public interface — nginx reaches it over the internal compose network.
+#
+# CERT_DIR must point at a directory containing fullchain.pem + privkey.pem
+# (exactly what certbot produces under /etc/letsencrypt/live/<domain>/ — set
+# CERT_DIR to that path directly on the VM, no renaming needed). Renew via
+# cron: `certbot renew --deploy-hook "docker exec researchquest-bolt-proxy nginx -s reload"`
+
+services:
+  neo4j:
+    # `ports` merges with docker-compose.yml by union, not replace — use
+    # !override to actually drop the base file's 7687 host publish instead
+    # of ending up with it published twice (!reset clears the field instead
+    # of replacing it, which isn't what we want here). bolt is intentionally
+    # NOT published to the host — nginx is the only path in from outside.
+    # For ad-hoc admin queries on the VM itself:
+    #   docker exec -it researchquest-neo4j cypher-shell -u neo4j -p ...
+    ports: !override
+      - "127.0.0.1:7474:7474"
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: researchquest-bolt-proxy
+    restart: unless-stopped
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    ports:
+      - "7687:7687"
+    volumes:
+      - ./nginx/bolt-proxy.conf:/etc/nginx/nginx.conf:ro
+      - ${CERT_DIR:?set CERT_DIR to your certbot live directory}:/etc/nginx/certs:ro
