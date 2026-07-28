@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "researchquest": {
+      "type": "stdio",
+      "command": "/Users/akashkumar/projects/ResearchQuest/.venv/bin/python",
+      "args": [
+        "/Users/akashkumar/projects/ResearchQuest/mcp_server.py"
+      ]
+    }
+  }
+}

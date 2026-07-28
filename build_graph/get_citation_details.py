@@ -43,10 +43,10 @@ def append_to_csv(df, filepath):
         df.to_csv(filepath, index=False)
 
 def save_references_to_jsonl(citations, filename="data/references.jsonl", complete_data_dump_file_name="data/references_complete.jsonl"):
-    with open(filename, 'a') as f:
-        for citation in citations:
-            if len(citation) != 0:
-                f.write(json.dumps(citation) + '\n')
+    # with open(filename, 'a') as f:
+    #     for citation in citations:
+    #         if len(citation) != 0:
+    #             f.write(json.dumps(citation) + '\n')
     
     with open(complete_data_dump_file_name, 'a') as f:
         for citation in citations:
@@ -114,6 +114,9 @@ def fetch_references(paper_id, fields, max_retries=8):
 
                 if 'message' in response or 'error' in response:
                     raise Exception
+                
+                if response is None or 'data' not in response:
+                    return -1
 
                 citations.extend(response['data'])
                 next_offset = response.get('next', None)
@@ -217,7 +220,7 @@ def main():
 
     # load paper ids of papers with no citations
     papers_with_no_references = []
-    if os.path.exists('data/semantic_ids_with_no_references.json'):
+    if os.path.exists('data/semantic_ids_with_no_references.json'): 
         with open("data/semantic_ids_with_no_references.json", "r") as f:
             papers_with_no_references = json.load(f)
 
@@ -225,14 +228,18 @@ def main():
 
 
     processed_paper_ids = list(processed_paper_ids)
-    processed_paper_ids.extend(papers_with_no_references)
+    # processed_paper_ids.extend(papers_with_no_references)
 
 
     all_papers = [paper_id for paper_id in semantic_paper_ids if paper_id not in processed_paper_ids]
+    random.shuffle(all_papers)
     for paper in tqdm(all_papers, desc="Fetching references"):
         try:
             paper_id = paper
             citations = fetch_references(paper_id, citations_fields)
+            if citations == -1:
+                failed_paper_ids.append(paper_id)
+                continue
             for citation in citations:
                 if citation == -1:
                     failed_paper_ids.append(paper_id)

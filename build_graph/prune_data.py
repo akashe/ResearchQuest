@@ -52,21 +52,26 @@ df = pd.DataFrame(
 import datetime
 
 current_year = datetime.datetime.now().year
+print(f"Current year: {current_year}, type(current_year): {type(current_year)}")
+ages = set()
 
 def keep_paper(row):
+    if pd.isna(row['year']):
+        return False
     age = current_year - row['year']
     if age == 0:
-        return row['citationCount'] >= 0
+        return True
     elif age == 1:
-        return row['citationCount'] > 5
+        return True
     elif age == 2:
-        return row['citationCount'] > 25
+        return row['citationCount'] > 5
     elif age == 3:
-        return row['citationCount'] > 100
+        return row['citationCount'] > 20
     elif age == 4:
-        return row['citationCount'] > 250
+        return row['citationCount'] > 50
     else:
-        return row['citationCount'] > 500 
+        return row['citationCount'] > 100 
+
 
 df = df[df.apply(keep_paper, axis=1)]
 

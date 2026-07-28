@@ -62,7 +62,7 @@ if st.session_state.graph_name:
     with st.expander("📈 Top Papers from Last N Years", expanded=True):
         st.subheader("Top Papers from Last N Years")
         papers_per_year = st.number_input("How many top papers per year?", min_value=1, max_value=50, value=20, step=1)
-        from_year = st.number_input("From which year?", min_value=2019, max_value=2025, value=2022, step=1)
+        from_year = st.number_input("From which year?", min_value=2019, max_value=2026, value=2022, step=1)
         show_evolution = st.radio(
                 "Generate topic evolution summary?",
                 options=["Yes", "No"],
@@ -108,6 +108,7 @@ if st.session_state.graph_name:
             table_df_modified = table_df.drop(columns=["ID", "Abstract"])
             st.dataframe(table_df_modified, use_container_width=True)
 
+            # Extract key points from each chunk
             for i in range(num_chunks):
                 start = i * chunk_size
                 end = (i + 1) * chunk_size
@@ -115,24 +116,20 @@ if st.session_state.graph_name:
                 if df.empty:
                     break
                 if ask_question:
-                    result = ask_custom_question(user_question, df, year_cutoff, topic_name)
+                    extracted = extract_relevant_info_for_question(user_question, df, year_cutoff, topic_name)
                 else:
-                    result = summarize_state_of_art(df, year_cutoff, topic_name)
-                st.markdown(result, unsafe_allow_html=True)
-                results.append(result)
-                st.markdown("----------------------------")
-                st.markdown("----------------------------")
+                    extracted = extract_key_points_state_of_art(df, year_cutoff, topic_name)
+                results.append(extracted)
                 time.sleep(30)
 
-            # Show final combined summary/answer
-            if num_chunks > 1:
-                final_output = "No answer generated"
-                if ask_question:
-                    final_output = combine_answers(results, user_question, topic_name, year_cutoff)
-                    st.markdown("### Final Combined Answer")
-                else:
-                    final_output = combine_summaries(results, topic_name, year_cutoff)
-                    st.markdown("### Final Combined Summary")
-                st.markdown(final_output, unsafe_allow_html=True)
+            # Synthesize final summary/answer from all extracted points
+            final_output = "No answer generated"
+            if ask_question:
+                final_output = synthesize_answer_from_extracts(results, user_question, topic_name, year_cutoff)
+                st.markdown("### Final Answer")
+            else:
+                final_output = synthesize_state_of_art(results, topic_name, year_cutoff)
+                st.markdown("### Final Summary")
+            st.markdown(final_output, unsafe_allow_html=True)
 
 

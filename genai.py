@@ -49,10 +49,10 @@ def summarize_topic_evolution(df: pd.DataFrame, topic_name) -> str:
     return response.text
 
 
-def summarize_state_of_art(df: pd.DataFrame, cutoff_year: int, topic_name) -> str:
+def extract_key_points_state_of_art(df: pd.DataFrame, cutoff_year: int, topic_name: str) -> str:
     """
-    Summarize the state of the art after a particular year.
-    Assumes df contains: title, abstract, year
+    Extract key points from papers for state of the art analysis.
+    Lightweight extraction to stay under token limits.
     """
     papers_text = "\n\n".join(
         f"Title: {row['title']}\nAbstract: {row['Abstract']}"
@@ -60,21 +60,19 @@ def summarize_state_of_art(df: pd.DataFrame, cutoff_year: int, topic_name) -> st
     )
 
     prompt = f"""
-    You are a researcher analyzing the state of the art in a machine learning topic after the year {cutoff_year}.
+    Extract key research points from these papers (after year {cutoff_year}) in concise bullet format:
 
-    Using the research abstracts below, summarize the following:
+    - Core hypotheses and ideas
+    - Novel techniques or discoveries
+    - Limitations and open questions
+    - Trade-offs in approaches
+    - Shared assumptions or constraints
+    - Convergence, redundancy, or saturation signs
+    - Competing directions or disagreements
+    - Benchmarks used
+    - Under-explored angles
 
-    - The core hypotheses and ideas being explored
-    - Novel techniques or discoveries introduced
-    - Common limitations, failure cases, or open questions
-    - Trade-offs involved in current approaches
-    - Any shared assumptions or constraints
-    - Signs of convergence, redundancy, or saturation
-    - Disagreements or competing directions in the field
-    - Benchmarks used to support claims and their realism
-    - Under-explored or neglected angles that deserve attention
-
-    Based on this, provide a critical synthesis: where is the field at right now? How mature is it? Is there evidence of overhype or real transformation and future directions?”
+    Be concise. Output only organized bullet points.
 
     {papers_text}
     """
@@ -83,22 +81,21 @@ def summarize_state_of_art(df: pd.DataFrame, cutoff_year: int, topic_name) -> st
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
-    logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while generating state of the art summary for {topic_name} after {cutoff_year}.")
-
+    logger.info(f"Extracted key points using {tokens_in} input and {tokens_out} output tokens for {topic_name} after {cutoff_year}.")
     log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
 
-def combine_summaries(results: list, topic_name: str, cutoff_year: int) -> str:
+def synthesize_state_of_art(extracted_points: list, topic_name: str, cutoff_year: int) -> str:
     """
-    Combine multiple state-of-the-art summaries into a single, coherent synthesis.
+    Synthesize extracted key points into a single, comprehensive state-of-the-art summary.
     """
-    joined = "\n\n---\n\n".join(results)
+    joined = "\n\n---\n\n".join(extracted_points)
     prompt = f"""
-        You are an expert research analyst. Below are several partial summaries of the state of the art from research papers released after the year {cutoff_year} using their titles and abstract.
+        You are an expert research analyst. Below are extracted key points from research papers released after the year {cutoff_year}.
 
-        Your task is to synthesize these into a single, comprehensive summary for a researcher new to the field. 
+        Your task is to synthesize these into a single, comprehensive summary for a researcher new to the field.
         Remove redundancy, integrate evidence and insights, and ensure your summary is well-structured and critical.
 
         **Your summary must explicitly address the following points:**
@@ -112,7 +109,9 @@ def combine_summaries(results: list, topic_name: str, cutoff_year: int) -> str:
         - Benchmarks used to support claims and their realism
         - Under-explored or neglected angles that deserve attention
 
-        Here are the partial summaries:
+        Based on this, provide a critical synthesis: where is the field at right now? How mature is it? Is there evidence of overhype or real transformation and future directions?
+
+        Here are the extracted key points:
         {joined}
     """
 
@@ -120,16 +119,16 @@ def combine_summaries(results: list, topic_name: str, cutoff_year: int) -> str:
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
-    logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while combining state of the art summaries for {topic_name} after {cutoff_year}.")
+    logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while synthesizing state of the art summary for {topic_name} after {cutoff_year}.")
     log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
 
-def ask_custom_question(question, df: pd.DataFrame, cutoff_year: int, topic_name) -> str:
+def extract_relevant_info_for_question(question: str, df: pd.DataFrame, cutoff_year: int, topic_name: str) -> str:
     """
-    Summarize the state of the art after a particular year.
-    Assumes df contains: title, abstract, year
+    Extract information relevant to answering a custom question.
+    Lightweight extraction to stay under token limits.
     """
     papers_text = "\n\n".join(
         f"Title: {row['title']}\nAbstract: {row['Abstract']}"
@@ -137,45 +136,40 @@ def ask_custom_question(question, df: pd.DataFrame, cutoff_year: int, topic_name
     )
 
     prompt = f"""
-    You are a researcher analyzing the state of the art in AI and machine learning. You will be given abstracts and titles of most important papers after the year {cutoff_year}.
+    Extract information from these papers (after year {cutoff_year}) that is relevant to answering this question: "{question}"
 
-    Using the research abstracts below, understand the following for yourself:
+    Focus on:
+    - Direct evidence or findings related to the question
+    - Relevant techniques, hypotheses, or ideas
+    - Important context or background
+    - Limitations or caveats
+    - Competing perspectives if any
 
-    - The core hypotheses and ideas being explored
-    - Novel techniques or discoveries introduced
-    - Common limitations, failure cases, or open questions
-    - Trade-offs involved in current approaches
-    - Any shared assumptions or constraints
-    - Signs of convergence, redundancy, or saturation
-    - Disagreements or competing directions in the field
-    - Benchmarks used to support claims and their realism
-    - Under-explored or neglected angles that deserve attention
+    Be concise. Output only relevant bullet points.
 
-    Here is the information about paper titles and their abstracts: {papers_text}
-
-    Based on this, answer a specific question: "{question}"
+    {papers_text}
     """
 
     response = model.generate_content(prompt)
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
-    logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while generating state of the art summary for {topic_name} after {cutoff_year}.")
-
+    logger.info(f"Extracted relevant info using {tokens_in} input and {tokens_out} output tokens for question '{question}' in {topic_name} after {cutoff_year}.")
     log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
 
 
-def combine_answers(results: list, question: str, topic_name: str, cutoff_year: int) -> str:
+def synthesize_answer_from_extracts(extracted_info: list, question: str, topic_name: str, cutoff_year: int) -> str:
     """
-    Combine multiple answers to a custom question into a single, coherent answer.
+    Synthesize extracted information into a single, comprehensive answer to the custom question.
     """
-    joined = "\n\n---\n\n".join(results)
+    joined = "\n\n---\n\n".join(extracted_info)
     prompt = f"""
-    You are an expert research analyst. Below are several partial answers to the question "{question}" generated from paper released after the year {cutoff_year} using their titles and abstract.
+    You are an expert research analyst. Below is extracted information from research papers released after the year {cutoff_year}.
 
-    Your task is to synthesize these into a single, comprehensive answer. 
+    Your task is to synthesize this information into a single, comprehensive answer to the question: "{question}"
+
     Remove redundancy, integrate evidence and insights, and ensure your answer is clear, well-structured, and insightful.
 
     **While answering, make sure to cover these aspects as relevant to the question:**
@@ -189,7 +183,7 @@ def combine_answers(results: list, question: str, topic_name: str, cutoff_year: 
     - Benchmarks used to support claims and their realism
     - Under-explored or neglected angles that deserve attention
 
-    Here are the partial answers:
+    Here is the extracted information:
     {joined}
     """
 
@@ -197,7 +191,7 @@ def combine_answers(results: list, question: str, topic_name: str, cutoff_year: 
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
-    logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while combining answers for question '{question}' in {topic_name} after {cutoff_year}.")
+    logger.info(f"Used {tokens_in} input and {tokens_out} output tokens while synthesizing answer for question '{question}' in {topic_name} after {cutoff_year}.")
     log_llm_usage(topic_name, prompt, response.text, tokens_in, tokens_out)
 
     return response.text
