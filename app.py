@@ -94,12 +94,31 @@ if st.session_state.graph_name:
             key=key,
         )
 
-    tab_sota, tab_question, tab_top_papers, tab_year_dist = st.tabs(
-        ["🔍 State of the Art", "💬 Custom Question", "📈 Top Papers", "📊 Year Distribution"]
+    # st.tabs() has no `key` param — it's a pure layout container with no
+    # session_state binding, so which tab is "active" is tracked only by the
+    # browser's local component state, not Python. That state can reset to
+    # the first tab on reruns triggered from elsewhere in the app. Using
+    # segmented_control instead — it's a real input widget (has `key`), so
+    # Streamlit correctly persists the selection across any rerun.
+    #
+    # Options are kept as plain text (icons applied only via format_func for
+    # display) rather than baking the icon into the value itself — Streamlit
+    # parses a leading emoji out as a separate internal "icon" field, and
+    # comparing/persisting against icon-embedded strings hit real friction
+    # in testing. Plain values sidestep that entirely.
+    SECTIONS = ["State of the Art", "Custom Question", "Top Papers", "Year Distribution"]
+    SECTION_ICONS = {"State of the Art": "🔍", "Custom Question": "💬", "Top Papers": "📈", "Year Distribution": "📊"}
+    active_section = st.segmented_control(
+        "Section",
+        options=SECTIONS,
+        default=SECTIONS[0],
+        format_func=lambda s: f"{SECTION_ICONS[s]} {s}",
+        key="active_section",
+        label_visibility="collapsed",
     )
 
-    # --- Tab: State of the Art ---
-    with tab_sota:
+    # --- Section: State of the Art ---
+    if active_section == "State of the Art":
         st.subheader("State of the Art")
         year_cutoff = st.number_input("After Year", 1900, 2100, 2022, key="sota_year_cutoff")
         papers_to_analyze = _papers_to_analyze_selectbox("sota_papers_to_analyze")
@@ -118,8 +137,8 @@ if st.session_state.graph_name:
             st.markdown("### Final Summary")
             st.markdown(final_output, unsafe_allow_html=True)
 
-    # --- Tab: Custom Question ---
-    with tab_question:
+    # --- Section: Custom Question ---
+    elif active_section == "Custom Question":
         st.subheader("Custom Question")
         year_cutoff_q = st.number_input("After Year", 1900, 2100, 2022, key="question_year_cutoff")
         user_question = st.text_input("Ask a question about this topic:")
@@ -142,8 +161,8 @@ if st.session_state.graph_name:
                 st.markdown("### Final Answer")
                 st.markdown(final_output, unsafe_allow_html=True)
 
-    # --- Tab: Top Papers from Last N Years ---
-    with tab_top_papers:
+    # --- Section: Top Papers from Last N Years ---
+    elif active_section == "Top Papers":
         st.subheader("Top Papers from Last N Years")
         papers_per_year = st.number_input("How many top papers per year?", min_value=1, max_value=50, value=20, step=1)
         from_year = st.number_input("From which year?", min_value=2019, max_value=2026, value=2022, step=1)
@@ -162,8 +181,8 @@ if st.session_state.graph_name:
                 st.markdown("#### Topic Evolution Summary")
                 st.markdown(summarize_topic_evolution(df, topic_name), unsafe_allow_html=True)
 
-    # --- Tab: Year-wise Distribution ---
-    with tab_year_dist:
+    # --- Section: Year-wise Distribution ---
+    elif active_section == "Year Distribution":
         st.subheader("Year-wise Distribution")
         if st.button("Show Year-wise Distribution"):
             df = pd.DataFrame(get_year_wise_distribution(topic_name))
