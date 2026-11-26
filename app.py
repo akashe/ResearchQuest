@@ -11,7 +11,6 @@ from genai import (
     run_chunked_extraction,
     CHUNK_SIZE,
     SLEEP_SECONDS,
-    QuotaExceededError,
 )
 from custom_logging import logger
 from neo4j_operations import create_topic_subgraph, check_top_papers_from_last_3_years, get_year_wise_distribution, get_state_of_the_art_analysis, load_data_if_missing
@@ -39,17 +38,6 @@ if "graph_name" not in st.session_state:
     st.session_state.graph_name = None
     st.session_state.topic = None
     st.session_state.topic_name = None
-
-
-def _show_quota_error() -> None:
-    """Shown in place of an LLM summary when Gemini's quota is exhausted
-    even after genai.py's retries; the paper tables above it still render."""
-    st.error(
-        "The Gemini API quota is exhausted, so the AI summary couldn't be generated. "
-        "The paper list above is unaffected. Try again in a few minutes; if it keeps "
-        "happening, the daily quota or the model's tier limit has been reached "
-        "(see the app logs for the exact limit)."
-    )
 
 
 def _slugify_topic_name(text: str) -> str:
@@ -142,17 +130,13 @@ if st.session_state.graph_name:
             )
             st.dataframe(main_df.iloc[0:100].drop(columns=["ID", "Abstract"]), use_container_width=True)
 
-            try:
-                results = run_chunked_extraction(
-                    main_df,
-                    lambda chunk: extract_key_points_state_of_art(chunk, year_cutoff, topic_name),
-                )
-                final_output = synthesize_state_of_art(results, topic_name, year_cutoff)
-            except QuotaExceededError:
-                _show_quota_error()
-            else:
-                st.markdown("### Final Summary")
-                st.markdown(final_output, unsafe_allow_html=True)
+            results = run_chunked_extraction(
+                main_df,
+                lambda chunk: extract_key_points_state_of_art(chunk, year_cutoff, topic_name),
+            )
+            final_output = synthesize_state_of_art(results, topic_name, year_cutoff)
+            st.markdown("### Final Summary")
+            st.markdown(final_output, unsafe_allow_html=True)
 
     # --- Section: Custom Question ---
     elif active_section == "Custom Question":
@@ -170,17 +154,13 @@ if st.session_state.graph_name:
                 )
                 st.dataframe(main_df.iloc[0:100].drop(columns=["ID", "Abstract"]), use_container_width=True)
 
-                try:
-                    results = run_chunked_extraction(
-                        main_df,
-                        lambda chunk: extract_relevant_info_for_question(user_question, chunk, year_cutoff_q, topic_name),
-                    )
-                    final_output = synthesize_answer_from_extracts(results, user_question, topic_name, year_cutoff_q)
-                except QuotaExceededError:
-                    _show_quota_error()
-                else:
-                    st.markdown("### Final Answer")
-                    st.markdown(final_output, unsafe_allow_html=True)
+                results = run_chunked_extraction(
+                    main_df,
+                    lambda chunk: extract_relevant_info_for_question(user_question, chunk, year_cutoff_q, topic_name),
+                )
+                final_output = synthesize_answer_from_extracts(results, user_question, topic_name, year_cutoff_q)
+                st.markdown("### Final Answer")
+                st.markdown(final_output, unsafe_allow_html=True)
 
     # --- Section: Top Papers from Last N Years ---
     elif active_section == "Top Papers":
@@ -200,10 +180,7 @@ if st.session_state.graph_name:
             st.dataframe(df_modified, use_container_width=True)
             if show_evolution:
                 st.markdown("#### Topic Evolution Summary")
-                try:
-                    st.markdown(summarize_topic_evolution(df, topic_name), unsafe_allow_html=True)
-                except QuotaExceededError:
-                    _show_quota_error()
+                st.markdown(summarize_topic_evolution(df, topic_name), unsafe_allow_html=True)
 
     # --- Section: Year-wise Distribution ---
     elif active_section == "Year Distribution":
