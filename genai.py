@@ -1,9 +1,11 @@
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
 import streamlit as st
 from dotenv import load_dotenv
 from typing import List, Callable
 import pandas as pd
 import os
+import re
 import time
 from custom_logging import logger
 
@@ -28,6 +30,60 @@ def _get_config(key: str) -> str:
 
 genai.configure(api_key=_get_config("GOOGLE_API_KEY"))
 model = genai.GenerativeModel(_get_config("GOOGLE_API_MODEL"))
+
+# Retry policy for Gemini 429s (ResourceExhausted). Per-minute limits clear
+# within a minute, so a few waits usually get through; anything longer is
+# surfaced to the UI as QuotaExceededError rather than a raw traceback.
+MAX_QUOTA_RETRIES = 3
+DEFAULT_RETRY_DELAY_SECONDS = 20
+MAX_RETRY_DELAY_SECONDS = 90
+
+
+class QuotaExceededError(Exception):
+    """Gemini kept returning ResourceExhausted after retrying (or the quota
+    is one that retrying can't fix, like a daily or zero limit)."""
+
+
+def _retry_delay_seconds(exc: Exception, attempt: int) -> float:
+    """Prefer the delay Gemini asks for: RetryInfo in the gRPC error
+    details, else "retry in 23.5s" in the message; fall back to doubling
+    a default. Capped so a Streamlit run never hangs for minutes."""
+    delay = None
+    for detail in getattr(exc, "details", None) or []:
+        retry_delay = getattr(detail, "retry_delay", None)
+        if retry_delay is not None:
+            delay = retry_delay.seconds + retry_delay.nanos / 1e9
+            break
+    if delay is None:
+        match = re.search(r"retry in ([\d.]+)\s*s", str(exc), re.IGNORECASE)
+        if match:
+            delay = float(match.group(1))
+    if delay is None:
+        delay = DEFAULT_RETRY_DELAY_SECONDS * (2 ** attempt)
+    return min(max(delay, 1.0), MAX_RETRY_DELAY_SECONDS)
+
+
+def _is_unretryable_quota(exc: Exception) -> bool:
+    """Daily quotas and zero limits (model not available on the key's tier)
+    won't clear in the next minute, so waiting on them only stalls the UI."""
+    text = str(exc).lower()
+    return "perday" in text or "per_day" in text or "limit: 0" in text
+
+
+def _generate(prompt: str):
+    """model.generate_content with retry on quota (429) errors."""
+    for attempt in range(MAX_QUOTA_RETRIES + 1):
+        try:
+            return model.generate_content(prompt)
+        except google_exceptions.ResourceExhausted as exc:
+            if _is_unretryable_quota(exc) or attempt == MAX_QUOTA_RETRIES:
+                logger.error(f"Gemini quota exhausted, giving up after {attempt + 1} attempt(s): {exc}")
+                raise QuotaExceededError(str(exc)) from exc
+            delay = _retry_delay_seconds(exc, attempt)
+            logger.warning(
+                f"Gemini quota hit (attempt {attempt + 1}/{MAX_QUOTA_RETRIES + 1}); retrying in {delay:.0f}s."
+            )
+            time.sleep(delay)
 
 
 def run_chunked_extraction(
@@ -90,7 +146,7 @@ def summarize_topic_evolution(df: pd.DataFrame, topic_name) -> str:
     {chr(10).join(yearly_chunks)}
     """
 
-    response = model.generate_content(prompt)
+    response = _generate(prompt)
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
@@ -127,7 +183,7 @@ def extract_key_points_state_of_art(df: pd.DataFrame, cutoff_year: int, topic_na
     {papers_text}
     """
 
-    response = model.generate_content(prompt)
+    response = _generate(prompt)
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
@@ -164,7 +220,7 @@ def synthesize_state_of_art(extracted_points: list, topic_name: str, cutoff_year
         {joined}
     """
 
-    response = model.generate_content(prompt)
+    response = _generate(prompt)
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
@@ -198,7 +254,7 @@ def extract_relevant_info_for_question(question: str, df: pd.DataFrame, cutoff_y
     {papers_text}
     """
 
-    response = model.generate_content(prompt)
+    response = _generate(prompt)
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
@@ -234,7 +290,7 @@ def synthesize_answer_from_extracts(extracted_info: list, question: str, topic_n
     {joined}
     """
 
-    response = model.generate_content(prompt)
+    response = _generate(prompt)
     tokens_in = response.usage_metadata.prompt_token_count
     tokens_out = response.usage_metadata.candidates_token_count
 
